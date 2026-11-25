@@ -14,11 +14,9 @@ import net.minecraft.entity.decoration.ArmorStandEntity;
 import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.entity.effect.StatusEffects;
 import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.item.AxeItem;
-import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
-import net.minecraft.item.MaceItem;
-import net.minecraft.item.SwordItem;
+import net.minecraft.item.Items;
+import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.MathHelper;
@@ -88,10 +86,9 @@ public class MainClient implements ClientModInitializer {
         ClientPlayerEntity player = client.player;
         if (player == null || client.world == null || client.currentScreen != null) return;
 
-        // только оружие в основной руке
+        // только оружие в основной руке: меч / топор / булава
         ItemStack hand = player.getMainHandStack();
-        Item item = hand.getItem();
-        if (!(item instanceof SwordItem || item instanceof AxeItem || item instanceof MaceItem)) return;
+        if (!(hand.isIn(ItemTags.SWORDS) || hand.isIn(ItemTags.AXES) || hand.isOf(Items.MACE))) return;
 
         LivingEntity target = null;
         double best = KA_RANGE * KA_RANGE;
