@@ -5,16 +5,13 @@ import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.input.KeyInput;
-import net.minecraft.text.StyleSpriteSource;
 import net.minecraft.text.Text;
-import net.minecraft.util.Identifier;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.List;
 import java.util.function.BooleanSupplier;
 
 public class AmelaScreen extends Screen {
-    private static final Identifier FONT = Identifier.of("amela-client", "menu");
     private static final String[] TABS = {"Combat", "Render", "Player", "Misc"};
 
     private static final int PANEL_W = 360, PANEL_H = 220;
@@ -43,10 +40,6 @@ public class AmelaScreen extends Screen {
         super(Text.literal("Amela client"));
     }
 
-    private static Text t(String s) {
-        return Text.literal(s).styled(style -> style.withFont(new StyleSpriteSource.Font(FONT)));
-    }
-
     private List<Row> rows(int tab) {
         return switch (tab) {
             case 0 -> List.of(new Row("KillAura", MainClient.MODULES::isKillAura, MainClient.MODULES::toggleKillAura));
@@ -66,7 +59,6 @@ public class AmelaScreen extends Screen {
     public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
         ctx.fill(0, 0, this.width, this.height, C_OVERLAY);
 
-        // панель с рамкой, закруглённая
         fillRound(ctx, px - 1, py - 1, PANEL_W + 2, PANEL_H + 2, 7, C_BORDER);
         fillRound(ctx, px, py, PANEL_W, PANEL_H, 6, C_PANEL);
 
@@ -74,8 +66,8 @@ public class AmelaScreen extends Screen {
         fillRound(ctx, px, py, PANEL_W, HEADER_H, 6, C_HEADER);
         ctx.fill(px, py + HEADER_H - 6, px + PANEL_W, py + HEADER_H, C_HEADER);
         ctx.fill(px + 6, py, px + PANEL_W - 6, py + 2, C_ACCENT);
-        ctx.drawTextWithShadow(this.textRenderer, t("Amela client"), px + 10, py + 10, C_ACCENT);
-        Text ver = t("v1.0.0");
+        ctx.drawTextWithShadow(this.textRenderer, Text.literal("Amela client"), px + 10, py + 10, C_ACCENT);
+        Text ver = Text.literal("v1.0.0");
         ctx.drawTextWithShadow(this.textRenderer, ver,
                 px + PANEL_W - 10 - this.textRenderer.getWidth(ver), py + 10, C_GRAY);
 
@@ -88,7 +80,7 @@ public class AmelaScreen extends Screen {
             fillRound(ctx, tx + 2, tabsY + 2, TAB_W - 4, TAB_H - 4, 4,
                     active ? C_TAB_ON : hover ? C_TAB_HOV : C_TAB);
             if (active) ctx.fill(tx + 6, tabsY + TAB_H - 5, tx + TAB_W - 6, tabsY + TAB_H - 3, C_ACCENT);
-            ctx.drawCenteredTextWithShadow(this.textRenderer, t(TABS[i]),
+            ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(TABS[i]),
                     tx + TAB_W / 2, tabsY + (TAB_H - 9) / 2, active ? C_TEXT : C_GRAY);
         }
         ctx.drawHorizontalLine(px + 6, px + PANEL_W - 7, tabsY + TAB_H, C_BORDER);
@@ -96,7 +88,7 @@ public class AmelaScreen extends Screen {
         // модули
         List<Row> list = rows(activeTab);
         if (list.isEmpty()) {
-            ctx.drawCenteredTextWithShadow(this.textRenderer, t("Пока пусто"),
+            ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal("Пока пусто"),
                     px + PANEL_W / 2, py + HEADER_H + TAB_H + 24, C_GRAY);
         }
         for (int i = 0; i < list.size(); i++) {
@@ -106,13 +98,13 @@ public class AmelaScreen extends Screen {
             boolean hover = inRect(mouseX, mouseY, bx, by, bw, ROW_H);
             fillRound(ctx, bx, by, bw, ROW_H, 5, hover ? C_TAB_HOV : C_TAB);
             ctx.fill(bx + 4, by + 6, bx + 6, by + ROW_H - 6, on ? C_ON : C_OFF);
-            ctx.drawTextWithShadow(this.textRenderer, t(row.name()), bx + 12, by + (ROW_H - 9) / 2, C_TEXT);
-            Text state = t(on ? "[ON]" : "[OFF]");
+            ctx.drawTextWithShadow(this.textRenderer, Text.literal(row.name()), bx + 12, by + (ROW_H - 9) / 2, C_TEXT);
+            Text state = Text.literal(on ? "[ON]" : "[OFF]");
             ctx.drawTextWithShadow(this.textRenderer, state,
                     bx + bw - 10 - this.textRenderer.getWidth(state), by + (ROW_H - 9) / 2, on ? C_ON : C_OFF);
         }
 
-        ctx.drawCenteredTextWithShadow(this.textRenderer, t("RShift / ESC — закрыть"),
+        ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal("RShift / ESC — закрыть"),
                 px + PANEL_W / 2, py + PANEL_H - 16, C_GRAY);
     }
 
@@ -153,7 +145,6 @@ public class AmelaScreen extends Screen {
         return false;
     }
 
-    // закруглённый прямоугольник со сглаженными углами
     private static void fillRound(DrawContext ctx, int x, int y, int w, int h, int r, int color) {
         ctx.fill(x + r, y, x + w - r, y + h, color);
         ctx.fill(x, y + r, x + r, y + h - r, color);
