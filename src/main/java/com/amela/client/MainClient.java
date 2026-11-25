@@ -16,10 +16,14 @@ import net.minecraft.entity.effect.StatusEffects;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.MathHelper;
+import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.RaycastContext;
 import org.lwjgl.glfw.GLFW;
 
 import java.security.SecureRandom;
@@ -30,6 +34,11 @@ public class MainClient implements ClientModInitializer {
     private static final double KA_RANGE = 3.0;   // серверный reach
     private static final float KA_ALIGN = 10.0f;  // допуск наведения для удара
     private static final SecureRandom KA_RANDOM = new SecureRandom();
+
+    // silent aim: ротация, которую видит сервер (камера не трогается)
+    private static float sYaw, sPitch;
+    private static int sTargetId = -1;
+    private static boolean sSynced = true; // серверная ротация = камера
 
     private static KeyBinding menuKey;
     private static boolean lastFullbright = false;
@@ -84,13 +93,18 @@ public class MainClient implements ClientModInitializer {
     }
 
     private static void tickKillAura(MinecraftClient client) {
-        if (!MODULES.isKillAura()) return;
         ClientPlayerEntity player = client.player;
-        if (player == null || client.world == null || client.currentScreen != null) return;
+        if (player == null || client.world == null || client.currentScreen != null || !MODULES.isKillAura()) {
+            resyncLook(client, player);
+            return;
+        }
 
         // только оружие в основной руке: меч / топор / булава
         ItemStack hand = player.getMainHandStack();
-        if (!(hand.isIn(ItemTags.SWORDS) || hand.isIn(ItemTags.AXES) || hand.isOf(Items.MACE))) return;
+        if (!(hand.isIn(ItemTags.SWORDS) || hand.isIn(ItemTags.AXES) || hand.isOf(Items.MACE))) {
+            resyncLook(client, player);
+            return;
+        }
 
         LivingEntity target = null;
         double best = KA_RANGE * KA_RANGE;
@@ -99,46 +113,77 @@ public class MainClient implements ClientModInitializer {
             double d = player.squaredDistanceTo(e);
             if (d < best) { best = d; target = e; }
         }
-        if (target == null) return;
+        if (target == null) {
+            resyncLook(client, player);
+            return;
+        }
+
+        // старт silent-ротации с текущей камеры при смене цели
+        if (sTargetId != target.getId()) {
+            sTargetId = target.getId();
+            sYaw = player.getYaw();
+            sPitch = player.getPitch();
+        }
 
         // цель
         double dx = target.getX() - player.getX();
         double dy = (target.getY() + target.getHeight() * 0.5) - player.getEyeY();
         double dz = target.getZ() - player.getZ();
-        float yaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0f;
-        float pitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
+        float aimYaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0f;
+        float aimPitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
 
-        // ротация в стиле SpookyTime: случайная скорость + пропорциональный доворот + sway
-        float yawDelta = MathHelper.wrapDegrees(yaw - player.getYaw());
-        float pitchDelta = pitch - player.getPitch();
-        float length = (float) Math.hypot(yawDelta, pitchDelta);
-        float newYaw = player.getYaw();
-        float newPitch = player.getPitch();
-        if (length > 1.0E-4f) {
+        // сглаженная silent-ротация (Spooky-стиль: случайная скорость)
+        float yawDelta = MathHelper.wrapDegrees(aimYaw - sYaw);
+        float pitchDelta = aimPitch - sPitch;
+        float len = (float) Math.hypot(yawDelta, pitchDelta);
+        if (len > 1.0E-4f) {
             float maxStep = kaRand(15.6f, 24.0f) * kaRand(1.0f, 2.0f);
-            float scale = Math.min(length, maxStep) / length;
-            newYaw = player.getYaw() + yawDelta * scale;
-            newPitch = MathHelper.clamp(player.getPitch() + pitchDelta * scale, -89.0f, 90.0f);
-            float time = (System.currentTimeMillis() % 12000L) / 1200.0f;
-            newYaw += (float) (Math.sin(time * 3.0f * 6.2831855f) * 0.6 * KA_RANDOM.nextGaussian());
+            float scale = Math.min(len, maxStep) / len;
+            sYaw += yawDelta * scale;
+            sPitch = MathHelper.clamp(sPitch + pitchDelta * scale, -89.0f, 90.0f);
         }
-        player.setYaw(newYaw);
-        player.setPitch(newPitch);
-        player.headYaw = newYaw;
 
-        // удар: полный кулдаун + точное наведение + прямая видимость
+        // сервер видит silent-ротацию, камера игрока не меняется
+        sendLook(client, player, sYaw, sPitch);
+        sSynced = false;
+
+        // удар: полный кулдаун + наведение silent-ротации + прямая видимость
         if (player.getAttackCooldownProgress(0.0f) < 1.0f) return;
-        if (Math.abs(MathHelper.wrapDegrees(yaw - newYaw)) > KA_ALIGN) return;
-        if (Math.abs(pitch - newPitch) > KA_ALIGN) return;
-        if (!player.canSee(target)) return;
+        if (Math.abs(MathHelper.wrapDegrees(aimYaw - sYaw)) > KA_ALIGN) return;
+        if (Math.abs(aimPitch - sPitch) > KA_ALIGN) return;
+        if (!hasLineOfSight(player, target)) return;
 
         if (canCrit(player)) {
             player.setSprinting(false); // спринт-удар не критует
+            sendLook(client, player, sYaw, sPitch); // пакет поворота строго перед атакой
             client.interactionManager.attackEntity(player, target);
             player.swingHand(Hand.MAIN_HAND);
         } else if (player.isOnGround() && !player.isTouchingWater() && !player.isClimbing() && !player.hasVehicle()) {
             player.jump(); // прыжок под крит, удар на падении
         }
+    }
+
+    // вернуть серверную ротацию к камере, когда аура не работает
+    private static void resyncLook(MinecraftClient client, ClientPlayerEntity player) {
+        if (sSynced || player == null || client.getNetworkHandler() == null) return;
+        sendLook(client, player, player.getYaw(), player.getPitch());
+        sSynced = true;
+        sTargetId = -1;
+    }
+
+    private static void sendLook(MinecraftClient client, ClientPlayerEntity player, float yaw, float pitch) {
+        if (client.getNetworkHandler() == null) return;
+        client.getNetworkHandler().sendPacket(
+                new PlayerMoveC2SPacket.LookAndOnGround(yaw, pitch, player.isOnGround(), player.horizontalCollision));
+    }
+
+    // проверка стен без учёта камеры
+    private static boolean hasLineOfSight(ClientPlayerEntity player, LivingEntity target) {
+        Vec3d from = player.getEyePos();
+        Vec3d to = target.getBoundingBox().getCenter();
+        HitResult hit = player.getEntityWorld().raycast(new RaycastContext(
+                from, to, RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.NONE, player));
+        return hit.getType() == HitResult.Type.MISS;
     }
 
     private static float kaRand(float min, float max) {
