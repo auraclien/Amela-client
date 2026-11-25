@@ -26,7 +26,7 @@ dependencies {
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 }
 
-// гладкий шрифт для меню: качается при сборке (CI тоже умеет)
+// гладкий шрифт меню: качается при сборке и кладётся в ресурсы jar
 def fontOutDir = layout.buildDirectory.dir("generated/amelaFont")
 
 tasks.register('downloadMenuFont') {
@@ -40,11 +40,13 @@ tasks.register('downloadMenuFont') {
             new URI('https://raw.githubusercontent.com/JulietaUla/Montserrat/master/fonts/ttf/Montserrat-Medium.ttf')
                     .toURL().withInputStream { ins -> f.withOutputStream { it << ins } }
         }
+        if (f.length() < 10000) throw new GradleException("Montserrat не скачался (size=" + f.length() + ")")
         def l = license.get().asFile
         if (!l.exists()) {
             new URI('https://raw.githubusercontent.com/JulietaUla/Montserrat/master/OFL.txt')
                     .toURL().withInputStream { ins -> l.withOutputStream { it << ins } }
         }
+        println "Amela font OK: " + f.length() + " bytes"
     }
 }
 
