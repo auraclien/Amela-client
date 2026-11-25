@@ -6,18 +6,19 @@ import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.input.KeyInput;
 import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
 import org.lwjgl.glfw.GLFW;
 
-public class AmelaScreen extends Screen {
-    private static final String[] TABS = {"Combat", "Render", "Player", "Misc"};
-    private static final int PLAYER_TAB = 2;
+import java.util.List;
+import java.util.function.BooleanSupplier;
 
-    private static final int PANEL_W = 360;
-    private static final int PANEL_H = 220;
-    private static final int HEADER_H = 28;
-    private static final int TAB_H = 22;
+public class AmelaScreen extends Screen {
+    private static final Identifier FONT = Identifier.of("amela-client", "menu");
+    private static final String[] TABS = {"Combat", "Render", "Player", "Misc"};
+
+    private static final int PANEL_W = 360, PANEL_H = 220;
+    private static final int HEADER_H = 28, TAB_H = 22, ROW_H = 24;
     private static final int TAB_W = PANEL_W / TABS.length;
-    private static final int ROW_H = 24;
 
     private static final int C_OVERLAY = 0xB0080810;
     private static final int C_PANEL   = 0xF014141C;
@@ -32,11 +33,26 @@ public class AmelaScreen extends Screen {
     private static final int C_ON      = 0xFF4ADE80;
     private static final int C_OFF     = 0xFFF87171;
 
+    private record Row(String name, BooleanSupplier state, Runnable toggle) {}
+
     private int activeTab = 0;
     private int px, py;
 
     public AmelaScreen() {
         super(Text.literal("Amela client"));
+    }
+
+    private static Text t(String s) {
+        return Text.literal(s).styled(style -> style.withFont(FONT));
+    }
+
+    private List<Row> rows(int tab) {
+        return switch (tab) {
+            case 0 -> List.of(new Row("KillAura", MainClient.MODULES::isKillAura, MainClient.MODULES::toggleKillAura));
+            case 1 -> List.of(new Row("Fullbright", MainClient.MODULES::isFullbright, MainClient.MODULES::toggleFullbright));
+            case 2 -> List.of(new Row("AutoSprint", MainClient.MODULES::isAutoSprint, MainClient.MODULES::toggleAutoSprint));
+            default -> List.of();
+        };
     }
 
     @Override
@@ -49,52 +65,54 @@ public class AmelaScreen extends Screen {
     public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
         ctx.fill(0, 0, this.width, this.height, C_OVERLAY);
 
-        // панель с рамкой
-        ctx.fill(px - 1, py - 1, px + PANEL_W + 1, py + PANEL_H + 1, C_BORDER);
-        ctx.fill(px, py, px + PANEL_W, py + PANEL_H, C_PANEL);
+        // панель с рамкой, закруглённая
+        fillRound(ctx, px - 1, py - 1, PANEL_W + 2, PANEL_H + 2, 7, C_BORDER);
+        fillRound(ctx, px, py, PANEL_W, PANEL_H, 6, C_PANEL);
 
         // шапка
-        ctx.fill(px, py, px + PANEL_W, py + HEADER_H, C_HEADER);
-        ctx.fill(px, py, px + PANEL_W, py + 2, C_ACCENT);
-        ctx.drawTextWithShadow(this.textRenderer, "Amela client", px + 10, py + 10, C_ACCENT);
-        String ver = "v1.0.0";
+        fillRound(ctx, px, py, PANEL_W, HEADER_H, 6, C_HEADER);
+        ctx.fill(px, py + HEADER_H - 6, px + PANEL_W, py + HEADER_H, C_HEADER);
+        ctx.fill(px + 6, py, px + PANEL_W - 6, py + 2, C_ACCENT);
+        ctx.drawTextWithShadow(this.textRenderer, t("Amela client"), px + 10, py + 10, C_ACCENT);
+        Text ver = t("v1.0.0");
         ctx.drawTextWithShadow(this.textRenderer, ver,
                 px + PANEL_W - 10 - this.textRenderer.getWidth(ver), py + 10, C_GRAY);
 
-        // вкладки
+        // вкладки-чипы
         int tabsY = py + HEADER_H;
         for (int i = 0; i < TABS.length; i++) {
             int tx = px + i * TAB_W;
             boolean active = i == activeTab;
             boolean hover = inRect(mouseX, mouseY, tx, tabsY, TAB_W, TAB_H);
-            ctx.fill(tx, tabsY, tx + TAB_W, tabsY + TAB_H,
+            fillRound(ctx, tx + 2, tabsY + 2, TAB_W - 4, TAB_H - 4, 4,
                     active ? C_TAB_ON : hover ? C_TAB_HOV : C_TAB);
-            if (active) ctx.fill(tx, tabsY + TAB_H - 2, tx + TAB_W, tabsY + TAB_H, C_ACCENT);
-            ctx.drawCenteredTextWithShadow(this.textRenderer, TABS[i],
-                    tx + TAB_W / 2, tabsY + (TAB_H - 8) / 2, active ? C_TEXT : C_GRAY);
+            if (active) ctx.fill(tx + 6, tabsY + TAB_H - 5, tx + TAB_W - 6, tabsY + TAB_H - 3, C_ACCENT);
+            ctx.drawCenteredTextWithShadow(this.textRenderer, t(TABS[i]),
+                    tx + TAB_W / 2, tabsY + (TAB_H - 9) / 2, active ? C_TEXT : C_GRAY);
         }
-        ctx.drawHorizontalLine(px, px + PANEL_W - 1, tabsY + TAB_H, C_BORDER);
+        ctx.drawHorizontalLine(px + 6, px + PANEL_W - 7, tabsY + TAB_H, C_BORDER);
 
-        // контент
-        if (activeTab == PLAYER_TAB) {
-            boolean on = MainClient.MODULES.isAutoSprint();
-            int bx = moduleX(), by = moduleY(), bw = moduleW();
+        // модули
+        List<Row> list = rows(activeTab);
+        if (list.isEmpty()) {
+            ctx.drawCenteredTextWithShadow(this.textRenderer, t("Пока пусто"),
+                    px + PANEL_W / 2, py + HEADER_H + TAB_H + 24, C_GRAY);
+        }
+        for (int i = 0; i < list.size(); i++) {
+            Row row = list.get(i);
+            boolean on = row.state().getAsBoolean();
+            int bx = px + 10, by = py + HEADER_H + TAB_H + 10 + i * (ROW_H + 6), bw = PANEL_W - 20;
             boolean hover = inRect(mouseX, mouseY, bx, by, bw, ROW_H);
-            ctx.fill(bx, by, bx + bw, by + ROW_H, hover ? C_TAB_HOV : C_TAB);
-            ctx.fill(bx, by, bx + 2, by + ROW_H, on ? C_ON : C_OFF);
-            ctx.drawTextWithShadow(this.textRenderer, "AutoSprint",
-                    bx + 10, by + (ROW_H - 8) / 2, C_TEXT);
-            String state = on ? "[ON]" : "[OFF]";
+            fillRound(ctx, bx, by, bw, ROW_H, 5, hover ? C_TAB_HOV : C_TAB);
+            ctx.fill(bx + 4, by + 6, bx + 6, by + ROW_H - 6, on ? C_ON : C_OFF);
+            ctx.drawTextWithShadow(this.textRenderer, t(row.name()), bx + 12, by + (ROW_H - 9) / 2, C_TEXT);
+            Text state = t(on ? "[ON]" : "[OFF]");
             ctx.drawTextWithShadow(this.textRenderer, state,
-                    bx + bw - 10 - this.textRenderer.getWidth(state),
-                    by + (ROW_H - 8) / 2, on ? C_ON : C_OFF);
-        } else {
-            ctx.drawCenteredTextWithShadow(this.textRenderer, "Пока пусто",
-                    px + PANEL_W / 2, moduleY() + 20, C_GRAY);
+                    bx + bw - 10 - this.textRenderer.getWidth(state), by + (ROW_H - 9) / 2, on ? C_ON : C_OFF);
         }
 
-        ctx.drawCenteredTextWithShadow(this.textRenderer, "RShift / ESC — закрыть",
-                px + PANEL_W / 2, py + PANEL_H - 14, C_GRAY);
+        ctx.drawCenteredTextWithShadow(this.textRenderer, t("RShift / ESC — закрыть"),
+                px + PANEL_W / 2, py + PANEL_H - 16, C_GRAY);
     }
 
     @Override
@@ -108,9 +126,13 @@ public class AmelaScreen extends Screen {
                     return true;
                 }
             }
-            if (activeTab == PLAYER_TAB && inRect(mx, my, moduleX(), moduleY(), moduleW(), ROW_H)) {
-                MainClient.MODULES.toggleAutoSprint();
-                return true;
+            List<Row> list = rows(activeTab);
+            for (int i = 0; i < list.size(); i++) {
+                int by = py + HEADER_H + TAB_H + 10 + i * (ROW_H + 6);
+                if (inRect(mx, my, px + 10, by, PANEL_W - 20, ROW_H)) {
+                    list.get(i).toggle().run();
+                    return true;
+                }
             }
         }
         return super.mouseClicked(click, doubled);
@@ -130,9 +152,32 @@ public class AmelaScreen extends Screen {
         return false;
     }
 
-    private int moduleX() { return px + 10; }
-    private int moduleY() { return py + HEADER_H + TAB_H + 10; }
-    private int moduleW() { return PANEL_W - 20; }
+    // закруглённый прямоугольник со сглаженными углами
+    private static void fillRound(DrawContext ctx, int x, int y, int w, int h, int r, int color) {
+        ctx.fill(x + r, y, x + w - r, y + h, color);
+        ctx.fill(x, y + r, x + r, y + h - r, color);
+        ctx.fill(x + w - r, y + r, x + w, y + h - r, color);
+        int baseA = (color >>> 24) & 0xFF;
+        int rgb = color & 0xFFFFFF;
+        for (int i = 0; i < r; i++) {
+            double dy = r - i - 0.5;
+            double dx = Math.sqrt(r * r - dy * dy);
+            int full = (int) dx;
+            int edgeA = (int) (baseA * (dx - full));
+            int edge = (edgeA << 24) | rgb;
+            int yt = y + i, yb = y + h - 1 - i;
+            ctx.fill(x + r - full, yt, x + r, yt + 1, color);
+            ctx.fill(x + r - full, yb, x + r, yb + 1, color);
+            ctx.fill(x + w - r, yt, x + w - r + full, yt + 1, color);
+            ctx.fill(x + w - r, yb, x + w - r + full, yb + 1, color);
+            if (edgeA > 0) {
+                ctx.fill(x + r - full - 1, yt, x + r - full, yt + 1, edge);
+                ctx.fill(x + r - full - 1, yb, x + r - full, yb + 1, edge);
+                ctx.fill(x + w - r + full, yt, x + w - r + full + 1, yt + 1, edge);
+                ctx.fill(x + w - r + full, yb, x + w - r + full + 1, yb + 1, edge);
+            }
+        }
+    }
 
     private static boolean inRect(double mx, double my, int x, int y, int w, int h) {
         return mx >= x && mx < x + w && my >= y && my < y + h;
