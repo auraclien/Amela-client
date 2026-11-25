@@ -26,58 +26,9 @@ dependencies {
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 }
 
-// ===== гладкий шрифт меню: генерируется и качается при сборке =====
-def fontDir = layout.buildDirectory.dir("generated/amelaFont/assets/amela-client/font")
-
-tasks.register('downloadMenuFont') {
-    outputs.dir(fontDir)
-    doLast {
-        def dir = fontDir.get().asFile
-        dir.mkdirs()
-        def ttf = new File(dir, 'menu.ttf')
-        if (!ttf.exists() || ttf.length() < 10000) {
-            new URI('https://raw.githubusercontent.com/JulietaUla/Montserrat/master/fonts/ttf/Montserrat-Medium.ttf')
-                    .toURL().withInputStream { ins -> ttf.withOutputStream { it << ins } }
-        }
-        if (ttf.length() < 10000) throw new GradleException("Montserrat TTF не скачался")
-        new File(dir, 'menu.json').text = '''{
-  "providers": [
-    { "type": "ttf", "file": "amela-client:menu", "size": 9.0, "oversample": 4.0, "shift": [0.0, 1.0] },
-    { "type": "reference", "id": "minecraft:include/unifont" }
-  ]
-}
-'''
-        def lic = new File(dir, 'OFL.txt')
-        if (!lic.exists()) {
-            new URI('https://raw.githubusercontent.com/JulietaUla/Montserrat/master/OFL.txt')
-                    .toURL().withInputStream { ins -> lic.withOutputStream { it << ins } }
-        }
-        println "Amela font ready: " + ttf.length() + " bytes"
-    }
-}
-
-sourceSets {
-    main {
-        resources {
-            srcDirs = [layout.buildDirectory.dir("generated/amelaFont").get().asFile, 'src/main/resources']
-        }
-    }
-}
-
 processResources {
-    dependsOn 'downloadMenuFont'
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     inputs.property "version", project.version
     filesMatching("fabric.mod.json") { expand "version": project.version }
-    doLast {
-        def f = new File(destinationDir, 'assets/amela-client/font')
-        def ttf = new File(f, 'menu.ttf')
-        def json = new File(f, 'menu.json')
-        if (!json.exists() || !ttf.exists() || ttf.length() < 10000) {
-            throw new GradleException("Шрифт не попал в ресурсы — меню было бы в квадратах")
-        }
-        println "Amela font packed into jar"
-    }
 }
 
 tasks.withType(JavaCompile).configureEach { it.options.release = 21 }
