@@ -26,7 +26,32 @@ dependencies {
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 }
 
+// гладкий шрифт для меню: качается при сборке (CI тоже умеет)
+def fontOutDir = layout.buildDirectory.dir("generated/amelaFont")
+
+tasks.register('downloadMenuFont') {
+    def ttf = fontOutDir.map { it.file('assets/amela-client/font/menu.ttf') }
+    def license = fontOutDir.map { it.file('assets/amela-client/font/OFL.txt') }
+    outputs.files(ttf, license)
+    doLast {
+        def f = ttf.get().asFile
+        f.parentFile.mkdirs()
+        if (!f.exists()) {
+            new URI('https://raw.githubusercontent.com/JulietaUla/Montserrat/master/fonts/ttf/Montserrat-Medium.ttf')
+                    .toURL().withInputStream { ins -> f.withOutputStream { it << ins } }
+        }
+        def l = license.get().asFile
+        if (!l.exists()) {
+            new URI('https://raw.githubusercontent.com/JulietaUla/Montserrat/master/OFL.txt')
+                    .toURL().withInputStream { ins -> l.withOutputStream { it << ins } }
+        }
+    }
+}
+
+sourceSets { main { resources { srcDir fontOutDir } } }
+
 processResources {
+    dependsOn 'downloadMenuFont'
     inputs.property "version", project.version
     filesMatching("fabric.mod.json") { expand "version": project.version }
 }
