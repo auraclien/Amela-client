@@ -5,6 +5,7 @@ import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.input.KeyInput;
+import net.minecraft.text.StyleSpriteSource;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import org.lwjgl.glfw.GLFW;
@@ -43,7 +44,7 @@ public class AmelaScreen extends Screen {
     }
 
     private static Text t(String s) {
-        return Text.literal(s).styled(style -> style.withFont(FONT));
+        return Text.literal(s).styled(style -> style.withFont(new StyleSpriteSource.Font(FONT)));
     }
 
     private List<Row> rows(int tab) {
