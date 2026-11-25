@@ -22,12 +22,14 @@ import net.minecraft.util.Identifier;
 import net.minecraft.util.math.MathHelper;
 import org.lwjgl.glfw.GLFW;
 
+import java.security.SecureRandom;
+
 public class MainClient implements ClientModInitializer {
     public static final ModuleManager MODULES = new ModuleManager();
 
-    private static final double KA_RANGE = 3.0;   // серверный reach, не 4+
-    private static final float KA_STEP = 35.0f;   // плавный доворот, град/тик
-    private static final float KA_ALIGN = 12.0f;  // допуск наведения для удара
+    private static final double KA_RANGE = 3.0;   // серверный reach
+    private static final float KA_ALIGN = 10.0f;  // допуск наведения для удара
+    private static final SecureRandom KA_RANDOM = new SecureRandom();
 
     private static KeyBinding menuKey;
     private static boolean lastFullbright = false;
@@ -99,22 +101,35 @@ public class MainClient implements ClientModInitializer {
         }
         if (target == null) return;
 
-        // плавное наведение
+        // цель
         double dx = target.getX() - player.getX();
         double dy = (target.getY() + target.getHeight() * 0.5) - player.getEyeY();
         double dz = target.getZ() - player.getZ();
         float yaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0f;
         float pitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
-        float newYaw = player.getYaw() + MathHelper.clamp(MathHelper.wrapDegrees(yaw - player.getYaw()), -KA_STEP, KA_STEP);
-        float newPitch = MathHelper.clamp(player.getPitch()
-                + MathHelper.clamp(MathHelper.wrapDegrees(pitch - player.getPitch()), -KA_STEP, KA_STEP), -90.0f, 90.0f);
+
+        // ротация в стиле SpookyTime: случайная скорость + пропорциональный доворот + sway
+        float yawDelta = MathHelper.wrapDegrees(yaw - player.getYaw());
+        float pitchDelta = pitch - player.getPitch();
+        float length = (float) Math.hypot(yawDelta, pitchDelta);
+        float newYaw = player.getYaw();
+        float newPitch = player.getPitch();
+        if (length > 1.0E-4f) {
+            float maxStep = kaRand(15.6f, 24.0f) * kaRand(1.0f, 2.0f);
+            float scale = Math.min(length, maxStep) / length;
+            newYaw = player.getYaw() + yawDelta * scale;
+            newPitch = MathHelper.clamp(player.getPitch() + pitchDelta * scale, -89.0f, 90.0f);
+            float time = (System.currentTimeMillis() % 12000L) / 1200.0f;
+            newYaw += (float) (Math.sin(time * 3.0f * 6.2831855f) * 0.6 * KA_RANDOM.nextGaussian());
+        }
         player.setYaw(newYaw);
         player.setPitch(newPitch);
         player.headYaw = newYaw;
 
-        // удар только с полным кулдауном, точным наведением и без стен
+        // удар: полный кулдаун + точное наведение + прямая видимость
         if (player.getAttackCooldownProgress(0.0f) < 1.0f) return;
         if (Math.abs(MathHelper.wrapDegrees(yaw - newYaw)) > KA_ALIGN) return;
+        if (Math.abs(pitch - newPitch) > KA_ALIGN) return;
         if (!player.canSee(target)) return;
 
         if (canCrit(player)) {
@@ -126,10 +141,14 @@ public class MainClient implements ClientModInitializer {
         }
     }
 
+    private static float kaRand(float min, float max) {
+        return MathHelper.lerp(KA_RANDOM.nextFloat(), min, max);
+    }
+
     // ванильные условия крита
     private static boolean canCrit(ClientPlayerEntity p) {
         return !p.isOnGround()
-                && p.fallDistance > 0.0f
+                && p.fallDistance > 0.0
                 && p.getVelocity().y < 0.0
                 && !p.isClimbing()
                 && !p.isTouchingWater()
