@@ -3,10 +3,9 @@
     {
       "type": "ttf",
       "file": "amela-client:menu",
-      "size": 10.0,
-      "oversample": 8.0,
+      "size": 9.0,
+      "oversample": 4.0,
       "shift": [0.0, 1.0]
-    },
-    { "type": "reference", "id": "minecraft:include/unifont" }
+    }
   ]
 }
