@@ -296,4 +296,4 @@ public class MainClient implements ClientModInitializer {
         } else if (lastFullbright) p.removeStatusEffect(StatusEffects.NIGHT_VISION);
         lastFullbright = on;
     }
-            }
+                            }
