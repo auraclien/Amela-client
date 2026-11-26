@@ -27,18 +27,27 @@ import net.minecraft.world.RaycastContext;
 import org.lwjgl.glfw.GLFW;
 
 import java.security.SecureRandom;
+import java.util.concurrent.ThreadLocalRandom;
 
 public class MainClient implements ClientModInitializer {
     public static final ModuleManager MODULES = new ModuleManager();
 
-    private static final double KA_RANGE = 3.0;   // серверный reach
-    private static final float KA_ALIGN = 10.0f;  // допуск наведения для удара
+    // ===== KillAura настройки (из Releon) =====
+    private static final double KA_RANGE = 3.0;
+    private static final float KA_ALIGN = 10.0f;
     private static final SecureRandom KA_RANDOM = new SecureRandom();
+    private static final float AURA_ATTACK_DELAY_MS = 400.0f;
+    private static final float FAST_ATTACK_DELAY_MS = 480.0f;
 
-    // silent aim: ротация, которую видит сервер (камера не трогается)
+    // Silent aim состояние
     private static float sYaw, sPitch;
     private static int sTargetId = -1;
-    private static boolean sSynced = true; // серверная ротация = камера
+    private static boolean sSynced = true;
+
+    // Таймеры и гейты (из Releon StrikeManager/ClickGate)
+    private static StopWatch attackTimer = new StopWatch();
+    private static ClickGate clickGate = new ClickGate();
+    private static int attackCount = 0;
 
     private static KeyBinding menuKey;
     private static boolean lastFullbright = false;
@@ -99,7 +108,7 @@ public class MainClient implements ClientModInitializer {
             return;
         }
 
-        // только оружие в основной руке: меч / топор / булава
+        // только оружие
         ItemStack hand = player.getMainHandStack();
         if (!(hand.isIn(ItemTags.SWORDS) || hand.isIn(ItemTags.AXES) || hand.isOf(Items.MACE))) {
             resyncLook(client, player);
@@ -118,7 +127,7 @@ public class MainClient implements ClientModInitializer {
             return;
         }
 
-        // старт silent-ротации с текущей камеры при смене цели
+        // silent aim: старт с текущей камеры при смене цели
         if (sTargetId != target.getId()) {
             sTargetId = target.getId();
             sYaw = player.getYaw();
@@ -132,7 +141,7 @@ public class MainClient implements ClientModInitializer {
         float aimYaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0f;
         float aimPitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
 
-        // сглаженная silent-ротация (Spooky-стиль: случайная скорость)
+        // сглаженная ротация (Spooky-стиль)
         float yawDelta = MathHelper.wrapDegrees(aimYaw - sYaw);
         float pitchDelta = aimPitch - sPitch;
         float len = (float) Math.hypot(yawDelta, pitchDelta);
@@ -143,27 +152,58 @@ public class MainClient implements ClientModInitializer {
             sPitch = MathHelper.clamp(sPitch + pitchDelta * scale, -89.0f, 90.0f);
         }
 
-        // сервер видит silent-ротацию, камера игрока не меняется
+        // сервер видит silent-ротацию
         sendLook(client, player, sYaw, sPitch);
         sSynced = false;
 
-        // удар: полный кулдаун + наведение silent-ротации + прямая видимость
+        // проверка условий атаки (из Releon StrikeManager)
         if (player.getAttackCooldownProgress(0.0f) < 1.0f) return;
         if (Math.abs(MathHelper.wrapDegrees(aimYaw - sYaw)) > KA_ALIGN) return;
         if (Math.abs(aimPitch - sPitch) > KA_ALIGN) return;
         if (!hasLineOfSight(player, target)) return;
 
-        if (canCrit(player)) {
-            player.setSprinting(false); // спринт-удар не критует
-            sendLook(client, player, sYaw, sPitch); // пакет поворота строго перед атакой
+        // тайминг из ClickGate
+        if (!clickGate.canAttack(attackCount, 0.82f, false)) return;
+
+        // проверка крита (из Releon StrikeManager)
+        boolean canCritNow = canCrit(player);
+        boolean shouldCrit = checkCritCondition(player, "Legit");
+
+        if (shouldCrit && canCritNow) {
+            // крит готов
+            sendLook(client, player, sYaw, sPitch);
             client.interactionManager.attackEntity(player, target);
             player.swingHand(Hand.MAIN_HAND);
-        } else if (player.isOnGround() && !player.isTouchingWater() && !player.isClimbing() && !player.hasVehicle()) {
-            player.jump(); // прыжок под крит, удар на падении
+            attackTimer.reset();
+            attackCount++;
+            clickGate.registerClick(attackCount);
+        } else if (!shouldCrit || !canCritNow) {
+            // обычный удар или ждём крит
+            if (player.isOnGround() && !player.isTouchingWater() && !player.isClimbing() && !player.hasVehicle()) {
+                player.jump();
+            }
         }
     }
 
-    // вернуть серверную ротацию к камере, когда аура не работает
+    private static boolean checkCritCondition(ClientPlayerEntity player, String mode) {
+        float requiredFall = switch (mode) {
+            case "Legit" -> {
+                int stage = attackCount & 3;
+                yield switch (stage) {
+                    case 0 -> 0.2f;
+                    case 1 -> 0.0f;
+                    case 2 -> 0.25f;
+                    default -> 0.1f;
+                };
+            }
+            case "Random" -> kaRand(0.08f, 0.3f);
+            case "Static" -> 0.15f;
+            default -> 0.0f;
+        };
+
+        return player.fallDistance >= requiredFall;
+    }
+
     private static void resyncLook(MinecraftClient client, ClientPlayerEntity player) {
         if (sSynced || player == null || client.getNetworkHandler() == null) return;
         sendLook(client, player, player.getYaw(), player.getPitch());
@@ -177,7 +217,6 @@ public class MainClient implements ClientModInitializer {
                 new PlayerMoveC2SPacket.LookAndOnGround(yaw, pitch, player.isOnGround(), player.horizontalCollision));
     }
 
-    // проверка стен без учёта камеры
     private static boolean hasLineOfSight(ClientPlayerEntity player, LivingEntity target) {
         Vec3d from = player.getEyePos();
         Vec3d to = target.getBoundingBox().getCenter();
@@ -190,7 +229,6 @@ public class MainClient implements ClientModInitializer {
         return MathHelper.lerp(KA_RANDOM.nextFloat(), min, max);
     }
 
-    // ванильные условия крита
     private static boolean canCrit(ClientPlayerEntity p) {
         return !p.isOnGround()
                 && p.fallDistance > 0.0
@@ -208,4 +246,52 @@ public class MainClient implements ClientModInitializer {
         if (e instanceof PlayerEntity p && (p.isSpectator() || p.isCreative())) return false;
         return true;
     }
-}
+
+    // ===== Внутренние классы из Releon =====
+
+    private static class StopWatch {
+        private long last = System.currentTimeMillis();
+
+        public void reset() {
+            last = System.currentTimeMillis();
+        }
+
+        public long elapsed() {
+            return System.currentTimeMillis() - last;
+        }
+
+        public boolean hasElapsed(double delayMs) {
+            return elapsed() >= delayMs;
+        }
+    }
+
+    private static class ClickGate {
+        private static final int[] defaultTicks = {10, 11};
+        private long lastClickTime = System.currentTimeMillis();
+
+        public boolean canAttack(int attackCount, float minimumCooldown, boolean tpsSync) {
+            long elapsedMs = System.currentTimeMillis() - lastClickTime;
+            float cooldown = MathHelper.clamp(minimumCooldown, 0.0f, 1.0f);
+
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (client.player == null) return false;
+
+            double attackSpeed = Math.max(0.001, client.player.getAttributeValue(net.minecraft.entity.attribute.EntityAttributes.ATTACK_SPEED));
+            if (!Double.isFinite(attackSpeed)) attackSpeed = 4.0;
+
+            long requiredMs = (long) (1000.0 / attackSpeed * cooldown * (20.0 / (tpsSync ? 20.0f : 20.0f)));
+
+            if (elapsedMs >= requiredMs) {
+                int delayTicks = defaultTicks[attackCount % defaultTicks.length];
+                float tickDelay = delayTicks * (20.0f / (tpsSync ? 20.0f : 20.0f));
+                float cooldownProgress = client.player.getAttackCooldownProgress(tickDelay);
+                return cooldownProgress >= cooldown;
+            }
+            return false;
+        }
+
+        public void registerClick(int count) {
+            lastClickTime = System.currentTimeMillis();
+        }
+    }
+                                                                                 }
