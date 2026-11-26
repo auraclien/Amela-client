@@ -8,10 +8,8 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
-import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.attribute.EntityAttributes;
 import net.minecraft.entity.decoration.ArmorStandEntity;
@@ -20,7 +18,6 @@ import net.minecraft.entity.effect.StatusEffects;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
-import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
 import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
@@ -32,7 +29,6 @@ import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
 import org.lwjgl.glfw.GLFW;
 
-import java.util.ArrayDeque;
 import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -42,17 +38,14 @@ public class MainClient implements ClientModInitializer {
     private static final double ATTACK_RANGE = 3.0;
     private static final double RAY_RANGE = ATTACK_RANGE - 0.25;
     private static final double KEEP_RANGE = 3.6;
-    private static final float JUMP_LEAD_TICKS = 5.0f;
+    private static final float JUMP_LEAD_TICKS = 7.0f;
 
     private static LivingEntity target;
     private static boolean aiming;
     private static float sYaw, sPitch, rotSpeed;
     private static long lastAttackMs, lastClickMs;
     private static int attackCount;
-
-    private record Snap(long time, Vec3d pos) {}
-    private static final ArrayDeque<Snap> history = new ArrayDeque<>();
-    private static int histId = -1;
+    private static boolean jumpedByUs, sprintReleased;
 
     private static KeyBinding menuKey;
     private static boolean lastFullbright = false;
@@ -66,13 +59,14 @@ public class MainClient implements ClientModInitializer {
         ClientTickEvents.START_CLIENT_TICK.register(MainClient::preTick);
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             while (menuKey.wasPressed()) client.setScreen(new AmelaScreen());
+            if (jumpedByUs) { client.options.jumpKey.setPressed(false); jumpedByUs = false; }
+            if (sprintReleased) { client.options.sprintKey.setPressed(true); sprintReleased = false; }
             tickAutoSprint(client);
             tickFullbright(client);
             tickAttack(client);
         });
     }
 
-    // точная формула SensitivityFix.hu()
     private static double gcd(MinecraftClient client) {
         double s = client.options.getMouseSensitivity().getValue();
         return Math.pow(s * 0.6 + 0.2, 3.0) * 1.2;
@@ -89,32 +83,20 @@ public class MainClient implements ClientModInitializer {
         target = t;
 
         if (t == null) {
-            histId = -1;
-            history.clear();
             if (aiming) {
                 float dy = MathHelper.wrapDegrees(player.getYaw() - sYaw);
                 float dp = player.getPitch() - sPitch;
                 if (Math.abs(dy) < 0.5f && Math.abs(dp) < 0.5f) resetAim();
                 else {
-                    // DynamicSpeedHelper: чем меньше остаток, тем быстрее доводка
-                    float diff = (float) Math.hypot(dy, dp);
-                    float factor = 1.0f - Math.min(1.0f, diff / 180.0f);
-                    float yawSpeed = 15.0f + factor * 45.0f;
-                    float g = (float) gcd(client);
-                    float stepY = MathHelper.clamp(dy, -yawSpeed, yawSpeed);
-                    float stepP = MathHelper.clamp(dp, -25.0f, 25.0f);
-                    sYaw += (float) (Math.round(stepY / g) * g);
-                    sPitch = MathHelper.clamp(sPitch + (float) (Math.round(stepP / g) * g), -89.0f, 90.0f);
+                    float len = (float) Math.hypot(dy, dp);
+                    float scale = Math.min(len, rand(15.6f, 48.0f)) / len;
+                    sYaw += dy * scale;
+                    sPitch = MathHelper.clamp(sPitch + dp * scale, -89.0f, 90.0f);
                     SilentRotation.set(sYaw, sPitch);
                 }
             }
             return;
         }
-
-        if (histId != t.getId()) { histId = t.getId(); history.clear(); }
-        long now = System.currentTimeMillis();
-        history.addLast(new Snap(now, pos(t)));
-        while (!history.isEmpty() && now - history.peekFirst().time() > 400) history.removeFirst();
 
         if (!aiming) { sYaw = player.getYaw(); sPitch = player.getPitch(); rotSpeed = 0; aiming = true; }
 
@@ -138,18 +120,35 @@ public class MainClient implements ClientModInitializer {
             float g = (float) gcd(client);
             float dY = (float) (Math.round(yawDelta * scale / g) * g);
             float dP = (float) (Math.round(pitchDelta * scale / g) * g);
+            if (len < 6.0f) {
+                dY += g * ThreadLocalRandom.current().nextInt(-1, 2);
+                dP += g * ThreadLocalRandom.current().nextInt(-1, 2);
+            }
             sYaw += dY;
             sPitch = MathHelper.clamp(sPitch + dP, -89.0f, 90.0f);
         }
         SilentRotation.set(sYaw, sPitch);
 
-        // реальный прыжок: кулдаун истечёт до апекса, удар придётся на падение
+        float cd = player.getAttackCooldownProgress(0.0f);
+
+        // прыжок через клавишу: ванилла сама отправит input jump=true (никакого рассинхрона)
         if (player.isOnGround() && !player.isTouchingWater() && !player.isClimbing()
-                && !player.hasVehicle()
+                && !player.hasVehicle() && !client.options.jumpKey.isPressed()
                 && player.squaredDistanceTo(t) <= ATTACK_RANGE * ATTACK_RANGE) {
-            float ticksLeft = (1.0f - player.getAttackCooldownProgress(0.0f))
-                    * 20.0f / (float) attackSpeed(player);
-            if (ticksLeft <= JUMP_LEAD_TICKS) player.jump();
+            float ticksLeft = (1.0f - cd) * 20.0f / (float) attackSpeed(player);
+            if (ticksLeft <= JUMP_LEAD_TICKS) {
+                client.options.jumpKey.setPressed(true);
+                jumpedByUs = true;
+            }
+        }
+
+        // сброс спринта под крит (MaxDamage.mx): снимаем клавишу, ванилла шлёт STOP_SPRINTING до атаки
+        if (!player.isOnGround() && player.getVelocity().y < 0.0 && cd >= 0.85f && player.isSprinting()) {
+            if (client.options.sprintKey.isPressed()) {
+                client.options.sprintKey.setPressed(false);
+                sprintReleased = true;
+            }
+            player.setSprinting(false);
         }
     }
 
@@ -167,14 +166,10 @@ public class MainClient implements ClientModInitializer {
         double cz = MathHelper.clamp(eye.z, box.minZ, box.maxZ);
         if (eye.squaredDistanceTo(cx, cy, cz) > ATTACK_RANGE * ATTACK_RANGE) return;
 
+        // луч ПРЕДЫДУЩЕЙ отправленной ротации по настоящему хитбоксу
         Vec3d dir = lookVec(SilentRotation.getSentYaw(), SilentRotation.getSentPitch());
         Vec3d end = eye.add(dir.multiply(RAY_RANGE));
-
         Optional<Vec3d> hit = box.contains(eye) ? Optional.of(eye) : box.raycast(eye, end);
-        if (hit.isEmpty()) {
-            Box old = backtrackBox(box, player);
-            if (old != null) hit = old.contains(eye) ? Optional.of(eye) : old.raycast(eye, end);
-        }
         if (hit.isEmpty()) return;
 
         BlockHitResult blockHit = player.getEntityWorld().raycast(new RaycastContext(
@@ -190,49 +185,18 @@ public class MainClient implements ClientModInitializer {
                 && player.getAttackCooldownProgress(0.0f) >= 1.0f;
         if (!ready) return;
 
-        // только настоящий крит: падение, не земля
+        // крит: падение + спринт уже выключен (иначе сервер даст 100% вместо 150%)
         boolean crit = player.fallDistance > 0.0f
                 && !player.isOnGround()
                 && player.getVelocity().y < 0.0
+                && !player.isSprinting()
                 && !player.isClimbing() && !player.isTouchingWater()
                 && !player.hasStatusEffect(StatusEffects.BLINDNESS) && !player.hasVehicle();
         if (!crit) return;
 
-        if (player.isSprinting()) {
-            player.setSprinting(false);
-            if (client.getNetworkHandler() != null) {
-                client.getNetworkHandler().sendPacket(new ClientCommandC2SPacket(
-                        player, ClientCommandC2SPacket.Mode.STOP_SPRINTING));
-            }
-        }
-
         client.interactionManager.attackEntity(player, target);
         player.swingHand(Hand.MAIN_HAND);
         lastAttackMs = now; lastClickMs = now; attackCount++;
-    }
-
-    private static Box backtrackBox(Box current, ClientPlayerEntity player) {
-        if (history.size() < 2 || target == null) return null;
-        int latency = 0;
-        if (player.networkHandler != null) {
-            PlayerListEntry e = player.networkHandler.getPlayerListEntry(player.getUuid());
-            if (e != null) latency = e.getLatency();
-        }
-        long delay = MathHelper.clamp(latency, 0, 200);
-        if (delay < 50) return null;
-        long want = System.currentTimeMillis() - delay;
-        Snap best = null;
-        for (Snap s : history) {
-            if (s.time() <= want) best = s; else break;
-        }
-        if (best == null) return null;
-        Vec3d delta = best.pos().subtract(pos(target));
-        if (delta.lengthSquared() < 1.0E-6) return null;
-        return current.offset(delta);
-    }
-
-    private static Vec3d pos(Entity e) {
-        return new Vec3d(e.getX(), e.getY(), e.getZ());
     }
 
     private static double attackSpeed(ClientPlayerEntity p) {
@@ -277,6 +241,7 @@ public class MainClient implements ClientModInitializer {
         if (!MODULES.isAutoSprint()) return;
         ClientPlayerEntity p = client.player;
         if (p == null || client.currentScreen != null) return;
+        // только на земле, чтобы не перебивать сброс спринта под крит
         if (p.isOnGround() && client.options.forwardKey.isPressed() && !p.horizontalCollision
                 && !p.isSneaking() && p.getHungerManager().getFoodLevel() > 6.0f) p.setSprinting(true);
     }
@@ -292,4 +257,4 @@ public class MainClient implements ClientModInitializer {
         } else if (lastFullbright) p.removeStatusEffect(StatusEffects.NIGHT_VISION);
         lastFullbright = on;
     }
-}
+                }
