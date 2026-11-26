@@ -33,17 +33,16 @@ import java.util.concurrent.ThreadLocalRandom;
 public class MainClient implements ClientModInitializer {
     public static final ModuleManager MODULES = new ModuleManager();
 
-    // ===== KillAura (порт Releon) =====
-    private static final double ATTACK_RANGE = 3.0;
-    private static final double KEEP_RANGE = 4.0;      // удержание цели (keepTargetRange)
-    private static final long ATTACK_DELAY_MS = 400;   // StrikeManager.AURA_ATTACK_DELAY_MS
-    private static final int[] CLICK_TICKS = {10, 11}; // ClickGate.defaultTicks
+    // ===== Polar профиль =====
+    private static final double ATTACK_RANGE = 3.0;   // строгий reach
+    private static final double KEEP_RANGE = 3.6;
+    private static final float ALIGN_DEG = 4.0f;      // точное наведение перед ударом
 
     private static LivingEntity target;
     private static boolean aiming;
     private static float sYaw, sPitch;
-    private static long lastAttackMs;
-    private static long lastClickMs;
+    private static float rotSpeed;                    // текущая скорость доворота (разгон/торможение)
+    private static long lastAttackMs, lastClickMs;
     private static int attackCount;
 
     private static KeyBinding menuKey;
@@ -59,26 +58,18 @@ public class MainClient implements ClientModInitializer {
                 category
         ));
 
-        // ротация считается ДО тика игрока → ванильные пакеты уходят уже с ней
         ClientTickEvents.START_CLIENT_TICK.register(MainClient::updateAim);
-
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            while (menuKey.wasPressed()) {
-                client.setScreen(new AmelaScreen());
-            }
+            while (menuKey.wasPressed()) client.setScreen(new AmelaScreen());
             tickAutoSprint(client);
             tickFullbright(client);
             tickAttack(client);
         });
     }
 
-    // ===== прицел (silent) =====
     private static void updateAim(MinecraftClient client) {
         ClientPlayerEntity player = client.player;
-        if (player == null || client.world == null) {
-            resetAim();
-            return;
-        }
+        if (player == null || client.world == null) { resetAim(); return; }
 
         LivingEntity t = null;
         if (MODULES.isKillAura() && client.currentScreen == null && isWeapon(player.getMainHandStack())) {
@@ -87,13 +78,11 @@ public class MainClient implements ClientModInitializer {
         target = t;
 
         if (t == null) {
-            // плавный возврат серверной ротации к камере
             if (aiming) {
                 float dy = MathHelper.wrapDegrees(player.getYaw() - sYaw);
                 float dp = player.getPitch() - sPitch;
-                if (Math.abs(dy) < 0.5f && Math.abs(dp) < 0.5f) {
-                    resetAim();
-                } else {
+                if (Math.abs(dy) < 0.5f && Math.abs(dp) < 0.5f) resetAim();
+                else {
                     float len = (float) Math.hypot(dy, dp);
                     float scale = Math.min(len, rand(15.6f, 48.0f)) / len;
                     sYaw += dy * scale;
@@ -104,13 +93,8 @@ public class MainClient implements ClientModInitializer {
             return;
         }
 
-        if (!aiming) {
-            sYaw = player.getYaw();
-            sPitch = player.getPitch();
-            aiming = true;
-        }
+        if (!aiming) { sYaw = player.getYaw(); sPitch = player.getPitch(); rotSpeed = 0; aiming = true; }
 
-        // точка прицела — ближняя грань хитбокса (порт Vector/MultiPoint, упрощённо)
         Vec3d eye = player.getEyePos();
         Box box = t.getBoundingBox();
         Vec3d aim = box.raycast(eye, box.getCenter()).orElse(box.getCenter());
@@ -118,52 +102,61 @@ public class MainClient implements ClientModInitializer {
         float wantYaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0f;
         float wantPitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
 
-        // SpookyTime: случайная скорость 15.6–48°/тик, пропорциональный доворот
         float yawDelta = MathHelper.wrapDegrees(wantYaw - sYaw);
         float pitchDelta = wantPitch - sPitch;
         float len = (float) Math.hypot(yawDelta, pitchDelta);
         if (len > 1.0E-4f) {
-            float maxStep = rand(15.6f, 24.0f) * rand(1.0f, 2.0f);
-            float scale = Math.min(len, maxStep) / len;
-            yawDelta *= scale;
-            pitchDelta *= scale;
+            // «живая» скорость: разгон на дистанции, торможение у цели, без константы
+            float desired = Math.min(rand(26.0f, 40.0f), len * 0.35f + 4.0f);
+            rotSpeed += (desired - rotSpeed) * 0.4f;
+            rotSpeed *= rand(0.85f, 1.15f);
+            float step = Math.min(len, rotSpeed);
+            if (len > 20.0f && ThreadLocalRandom.current().nextInt(14) == 0) step = 0; // микро-пауза
 
-            // GCD: квантуем шаг под чувствительность мыши — углы как от реального ввода
+            float scale = step / len;
+            float dY = yawDelta * scale, dP = pitchDelta * scale;
+
+            // GCD под сенсу — углы кратны шагу мыши (Polar это проверяет)
             double sens = client.options.getMouseSensitivity().getValue();
             double f = sens * 0.6 + 0.2;
             double gcd = f * f * f * 8.0 * 0.15;
-            yawDelta = (float) (Math.round(yawDelta / gcd) * gcd);
-            pitchDelta = (float) (Math.round(pitchDelta / gcd) * gcd);
+            dY = (float) (Math.round(dY / gcd) * gcd);
+            dP = (float) (Math.round(dP / gcd) * gcd);
 
-            sYaw += yawDelta;
-            sPitch = MathHelper.clamp(sPitch + pitchDelta, -89.0f, 90.0f);
+            // джиттер в целых GCD у цели
+            if (len < 6.0f) {
+                dY += gcd * ThreadLocalRandom.current().nextInt(-1, 2);
+                dP += gcd * ThreadLocalRandom.current().nextInt(-1, 2);
+            }
+
+            sYaw += dY;
+            sPitch = MathHelper.clamp(sPitch + dP, -89.0f, 90.0f);
         }
         SilentRotation.set(sYaw, sPitch);
     }
 
-    // ===== удар =====
     private static void tickAttack(MinecraftClient client) {
         ClientPlayerEntity player = client.player;
         if (player == null || client.world == null || target == null || !aiming) return;
-        if (client.currentScreen != null) return;
-        if (!isWeapon(player.getMainHandStack())) return;
-        if (player.isUsingItem()) return; // Pause While Using
+        if (client.currentScreen != null || !isWeapon(player.getMainHandStack())) return;
+        if (player.isUsingItem()) return;
 
         Vec3d eye = player.getEyePos();
         Box box = target.getBoundingBox();
 
-        // дистанция глаз → ближайшая точка хитбокса ≤ 3.0
         double cx = MathHelper.clamp(eye.x, box.minX, box.maxX);
         double cy = MathHelper.clamp(eye.y, box.minY, box.maxY);
         double cz = MathHelper.clamp(eye.z, box.minZ, box.maxZ);
         if (eye.squaredDistanceTo(cx, cy, cz) > ATTACK_RANGE * ATTACK_RANGE) return;
 
-        // луч серверной ротации должен попадать в хитбокс (StrikeManager.n)
+        // наведение должно быть точным
         Vec3d look = lookVec(sYaw, sPitch);
-        if (!box.contains(eye) && box.expand(0.15).raycast(eye, eye.add(look.multiply(ATTACK_RANGE))).isEmpty()) return;
-
-        // без стен
         Vec3d aim = box.raycast(eye, box.getCenter()).orElse(box.getCenter());
+        float needYaw = (float) Math.toDegrees(Math.atan2(aim.z - eye.z, aim.x - eye.x)) - 90.0f;
+        if (Math.abs(MathHelper.wrapDegrees(needYaw - sYaw)) > ALIGN_DEG) return;
+        // луч серверной ротации обязан попасть в реальный хитбокс (без expand)
+        if (!box.contains(eye) && box.raycast(eye, eye.add(look.multiply(ATTACK_RANGE))).isEmpty()) return;
+
         HitResult hit = player.getEntityWorld().raycast(new RaycastContext(
                 eye, aim, RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.NONE, player));
         if (hit.getType() != HitResult.Type.MISS) return;
@@ -172,47 +165,34 @@ public class MainClient implements ClientModInitializer {
         double speed = player.getAttributeValue(EntityAttributes.ATTACK_SPEED);
         if (!Double.isFinite(speed) || speed < 0.001) speed = 4.0;
 
-        boolean ready = now - lastAttackMs >= ATTACK_DELAY_MS
-                && now - lastClickMs >= CLICK_TICKS[attackCount % CLICK_TICKS.length] * 50L
+        long delay = 400 + ThreadLocalRandom.current().nextInt(0, 120); // 400–520 мс
+        boolean ready = now - lastAttackMs >= delay
+                && now - lastClickMs >= (10 + (attackCount % 2)) * 50L
                 && now - lastClickMs >= (long) (1000.0 / speed)
                 && player.getAttackCooldownProgress(0.0f) >= 1.0f;
 
-        // крит-цикл Releon (eG): 0.2 / 0.0 / 0.25 / 0.1
-        float requiredFall = switch (attackCount & 3) {
-            case 0 -> 0.2f;
-            case 1 -> 0.0f;
-            case 2 -> 0.25f;
-            default -> 0.1f;
-        };
+        float requiredFall = rand(0.05f, 0.3f); // рандомный крит, без цикла-паттерна
         boolean crit = !player.isOnGround()
                 && player.getVelocity().y < -0.001
                 && player.fallDistance > requiredFall
-                && !player.isClimbing()
-                && !player.isTouchingWater()
-                && !player.hasStatusEffect(StatusEffects.BLINDNESS)
-                && !player.hasVehicle();
+                && !player.isClimbing() && !player.isTouchingWater()
+                && !player.hasStatusEffect(StatusEffects.BLINDNESS) && !player.hasVehicle();
 
         if (ready && crit) {
-            if (player.isSprinting()) player.setSprinting(false); // W-tap только в тик удара
+            if (player.isSprinting()) player.setSprinting(false);
             client.interactionManager.attackEntity(player, target);
             player.swingHand(Hand.MAIN_HAND);
-            lastAttackMs = now;
-            lastClickMs = now;
-            attackCount++;
+            lastAttackMs = now; lastClickMs = now; attackCount++;
         } else if (!ready && player.getAttackCooldownProgress(0.0f) > 0.7f
                 && player.isOnGround() && !player.isTouchingWater()
                 && !player.isClimbing() && !player.hasVehicle()) {
-            player.jump(); // прыжок под крит, удар на падении; движение не ломается
+            player.jump();
         }
     }
 
     private static LivingEntity findTarget(ClientPlayerEntity player) {
-        if (target != null && isValid(target)
-                && player.squaredDistanceTo(target) <= KEEP_RANGE * KEEP_RANGE) {
-            return target;
-        }
-        LivingEntity best = null;
-        double bd = ATTACK_RANGE * ATTACK_RANGE;
+        if (target != null && isValid(target) && player.squaredDistanceTo(target) <= KEEP_RANGE * KEEP_RANGE) return target;
+        LivingEntity best = null; double bd = ATTACK_RANGE * ATTACK_RANGE;
         for (LivingEntity e : player.getEntityWorld().getEntitiesByClass(LivingEntity.class,
                 player.getBoundingBox().expand(ATTACK_RANGE), MainClient::isValid)) {
             double d = player.squaredDistanceTo(e);
@@ -224,7 +204,7 @@ public class MainClient implements ClientModInitializer {
     private static boolean isValid(LivingEntity e) {
         MinecraftClient c = MinecraftClient.getInstance();
         if (e == c.player || e instanceof ArmorStandEntity) return false;
-        if (!e.isAlive() || e.getHealth() <= 0.0f || !e.isAttackable() || e.isInvulnerable()) return false;
+        if (!e.isAlive() || e.getHealth() <= 0 || !e.isAttackable() || e.isInvulnerable()) return false;
         if (e instanceof PlayerEntity p && (p.isSpectator() || p.isCreative())) return false;
         return true;
     }
@@ -234,52 +214,32 @@ public class MainClient implements ClientModInitializer {
     }
 
     private static Vec3d lookVec(float yaw, float pitch) {
-        float f = pitch * 0.017453292f;
-        float g = -yaw * 0.017453292f;
-        float h = MathHelper.cos(g);
-        float i = MathHelper.sin(g);
-        float j = MathHelper.cos(f);
-        float k = MathHelper.sin(f);
+        float f = pitch * 0.017453292f, g = -yaw * 0.017453292f;
+        float h = MathHelper.cos(g), i = MathHelper.sin(g);
+        float j = MathHelper.cos(f), k = MathHelper.sin(f);
         return new Vec3d(i * j, -k, h * j);
     }
 
-    private static void resetAim() {
-        aiming = false;
-        target = null;
-        SilentRotation.disable();
-    }
+    private static void resetAim() { aiming = false; target = null; rotSpeed = 0; SilentRotation.disable(); }
+    private static float rand(float min, float max) { return MathHelper.lerp(ThreadLocalRandom.current().nextFloat(), min, max); }
 
-    private static float rand(float min, float max) {
-        return MathHelper.lerp(ThreadLocalRandom.current().nextFloat(), min, max);
-    }
-
-    // ===== остальные модули =====
     private static void tickAutoSprint(MinecraftClient client) {
         if (!MODULES.isAutoSprint()) return;
-        ClientPlayerEntity player = client.player;
-        if (player == null || client.currentScreen != null) return;
-
-        if (client.options.forwardKey.isPressed()
-                && !player.horizontalCollision
-                && !player.isSneaking()
-                && player.getHungerManager().getFoodLevel() > 6.0f) {
-            player.setSprinting(true);
-        }
+        ClientPlayerEntity p = client.player;
+        if (p == null || client.currentScreen != null) return;
+        if (client.options.forwardKey.isPressed() && !p.horizontalCollision && !p.isSneaking()
+                && p.getHungerManager().getFoodLevel() > 6.0f) p.setSprinting(true);
     }
 
     private static void tickFullbright(MinecraftClient client) {
-        ClientPlayerEntity player = client.player;
+        ClientPlayerEntity p = client.player;
         boolean on = MODULES.isFullbright();
-        if (player == null) { lastFullbright = on; return; }
-
+        if (p == null) { lastFullbright = on; return; }
         if (on) {
-            StatusEffectInstance nv = player.getStatusEffect(StatusEffects.NIGHT_VISION);
-            if (nv == null || nv.getDuration() < 320) {
-                player.addStatusEffect(new StatusEffectInstance(StatusEffects.NIGHT_VISION, 400, 0, false, false, false));
-            }
-        } else if (lastFullbright) {
-            player.removeStatusEffect(StatusEffects.NIGHT_VISION);
-        }
+            StatusEffectInstance nv = p.getStatusEffect(StatusEffects.NIGHT_VISION);
+            if (nv == null || nv.getDuration() < 320)
+                p.addStatusEffect(new StatusEffectInstance(StatusEffects.NIGHT_VISION, 400, 0, false, false, false));
+        } else if (lastFullbright) p.removeStatusEffect(StatusEffects.NIGHT_VISION);
         lastFullbright = on;
     }
 }
