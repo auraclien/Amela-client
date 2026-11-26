@@ -43,7 +43,7 @@ public class MainClient implements ClientModInitializer {
     private static final double ATTACK_RANGE = 3.0;
     private static final double RAY_RANGE = ATTACK_RANGE - 0.25;
     private static final double KEEP_RANGE = 3.6;
-    private static final double CRIT_HEIGHT = 0.0625; // Criticals.vanillaHeight
+    private static final double CRIT_HEIGHT = 0.0625;
 
     private static LivingEntity target;
     private static boolean aiming;
@@ -70,7 +70,6 @@ public class MainClient implements ClientModInitializer {
             tickAutoSprint(client);
             tickFullbright(client);
             tickAttack(client);
-            applyVisualAim(client);
         });
     }
 
@@ -88,14 +87,17 @@ public class MainClient implements ClientModInitializer {
             histId = -1;
             history.clear();
             if (aiming) {
+                // AimReset: yaw 15..60 (dynamic), pitch 25, лёгкий джиттер
                 float dy = MathHelper.wrapDegrees(player.getYaw() - sYaw);
                 float dp = player.getPitch() - sPitch;
                 if (Math.abs(dy) < 0.5f && Math.abs(dp) < 0.5f) resetAim();
                 else {
-                    float len = (float) Math.hypot(dy, dp);
-                    float scale = Math.min(len, rand(15.6f, 48.0f)) / len;
-                    sYaw += dy * scale;
-                    sPitch = MathHelper.clamp(sPitch + dp * scale, -89.0f, 90.0f);
+                    float yawSpeed = MathHelper.clamp(Math.abs(dy) * 0.6f + 15.0f, 15.0f, 60.0f);
+                    float pitchSpeed = 25.0f;
+                    sYaw += MathHelper.clamp(dy, -yawSpeed, yawSpeed) + rand(-1.0f, 1.0f);
+                    sPitch = MathHelper.clamp(
+                            sPitch + MathHelper.clamp(dp, -pitchSpeed, pitchSpeed) + rand(-0.8f, 0.8f),
+                            -89.0f, 90.0f);
                     SilentRotation.set(sYaw, sPitch);
                 }
             }
@@ -180,16 +182,13 @@ public class MainClient implements ClientModInitializer {
                 && player.getAttackCooldownProgress(0.0f) >= 1.0f;
         if (!ready) return;
 
-        boolean blocked = player.isTouchingWater() || player.isClimbing() || player.hasVehicle()
-                || player.hasStatusEffect(StatusEffects.BLINDNESS);
-        if (blocked) return;
+        if (player.isTouchingWater() || player.isClimbing() || player.hasVehicle()
+                || player.hasStatusEffect(StatusEffects.BLINDNESS)) return;
 
         boolean realCrit = player.fallDistance > 0.0f && !player.isOnGround()
                 && player.getVelocity().y < 0.0;
-        boolean packetCrit = player.isOnGround();
-        if (!realCrit && !packetCrit) return;
+        if (!realCrit && !player.isOnGround()) return;
 
-        // сброс спринта + мгновенный пакет ДО атаки
         if (player.isSprinting()) {
             player.setSprinting(false);
             if (client.getNetworkHandler() != null) {
@@ -198,7 +197,6 @@ public class MainClient implements ClientModInitializer {
             }
         }
 
-        // пакетный крит (Criticals "Vanilla"): подъём + оседание, оба onGround=false
         if (!realCrit) {
             sendPos(client, player, player.getY() + CRIT_HEIGHT);
             sendPos(client, player, player.getY() + Math.max(0.001, CRIT_HEIGHT * 0.2));
@@ -212,15 +210,9 @@ public class MainClient implements ClientModInitializer {
     private static void sendPos(MinecraftClient client, ClientPlayerEntity p, double y) {
         if (client.getNetworkHandler() == null) return;
         client.getNetworkHandler().sendPacket(new PlayerMoveC2SPacket.Full(
-                p.getX(), y, p.getZ(), p.getYaw(), p.getPitch(), false, p.horizontalCollision));
-    }
-
-    // только визуал: голова/тело смотрят на цель, физика не затрагивается
-    private static void applyVisualAim(MinecraftClient client) {
-        ClientPlayerEntity p = client.player;
-        if (p == null || !aiming) return;
-        p.headYaw = sYaw;
-        p.bodyYaw = sYaw;
+                p.getX(), y, p.getZ(),
+                SilentRotation.getYaw(), SilentRotation.getPitch(),
+                false, p.horizontalCollision));
     }
 
     private static Box backtrackBox(Box current, ClientPlayerEntity player) {
@@ -304,4 +296,4 @@ public class MainClient implements ClientModInitializer {
         } else if (lastFullbright) p.removeStatusEffect(StatusEffects.NIGHT_VISION);
         lastFullbright = on;
     }
-}
+            }
