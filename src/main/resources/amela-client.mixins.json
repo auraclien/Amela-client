@@ -1,0 +1,11 @@
+{
+  "required": true,
+  "package": "com.amela.client.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "ClientCommonNetworkHandlerMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
