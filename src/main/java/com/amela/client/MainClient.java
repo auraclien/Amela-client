@@ -27,24 +27,18 @@ import net.minecraft.world.RaycastContext;
 import org.lwjgl.glfw.GLFW;
 
 import java.security.SecureRandom;
-import java.util.concurrent.ThreadLocalRandom;
 
 public class MainClient implements ClientModInitializer {
     public static final ModuleManager MODULES = new ModuleManager();
 
-    // ===== KillAura настройки (из Releon) =====
     private static final double KA_RANGE = 3.0;
     private static final float KA_ALIGN = 10.0f;
     private static final SecureRandom KA_RANDOM = new SecureRandom();
-    private static final float AURA_ATTACK_DELAY_MS = 400.0f;
-    private static final float FAST_ATTACK_DELAY_MS = 480.0f;
 
-    // Silent aim состояние
     private static float sYaw, sPitch;
     private static int sTargetId = -1;
     private static boolean sSynced = true;
 
-    // Таймеры и гейты (из Releon StrikeManager/ClickGate)
     private static StopWatch attackTimer = new StopWatch();
     private static ClickGate clickGate = new ClickGate();
     private static int attackCount = 0;
@@ -108,7 +102,6 @@ public class MainClient implements ClientModInitializer {
             return;
         }
 
-        // только оружие
         ItemStack hand = player.getMainHandStack();
         if (!(hand.isIn(ItemTags.SWORDS) || hand.isIn(ItemTags.AXES) || hand.isOf(Items.MACE))) {
             resyncLook(client, player);
@@ -127,21 +120,18 @@ public class MainClient implements ClientModInitializer {
             return;
         }
 
-        // silent aim: старт с текущей камеры при смене цели
         if (sTargetId != target.getId()) {
             sTargetId = target.getId();
             sYaw = player.getYaw();
             sPitch = player.getPitch();
         }
 
-        // цель
         double dx = target.getX() - player.getX();
         double dy = (target.getY() + target.getHeight() * 0.5) - player.getEyeY();
         double dz = target.getZ() - player.getZ();
         float aimYaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0f;
         float aimPitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
 
-        // сглаженная ротация (Spooky-стиль)
         float yawDelta = MathHelper.wrapDegrees(aimYaw - sYaw);
         float pitchDelta = aimPitch - sPitch;
         float len = (float) Math.hypot(yawDelta, pitchDelta);
@@ -152,56 +142,27 @@ public class MainClient implements ClientModInitializer {
             sPitch = MathHelper.clamp(sPitch + pitchDelta * scale, -89.0f, 90.0f);
         }
 
-        // сервер видит silent-ротацию
         sendLook(client, player, sYaw, sPitch);
         sSynced = false;
 
-        // проверка условий атаки (из Releon StrikeManager)
         if (player.getAttackCooldownProgress(0.0f) < 1.0f) return;
         if (Math.abs(MathHelper.wrapDegrees(aimYaw - sYaw)) > KA_ALIGN) return;
         if (Math.abs(aimPitch - sPitch) > KA_ALIGN) return;
         if (!hasLineOfSight(player, target)) return;
 
-        // тайминг из ClickGate
         if (!clickGate.canAttack(attackCount, 0.82f, false)) return;
 
-        // проверка крита (из Releon StrikeManager)
+        // проверяем крит через текущую fallDistance (без прыжков!)
         boolean canCritNow = canCrit(player);
-        boolean shouldCrit = checkCritCondition(player, "Legit");
-
-        if (shouldCrit && canCritNow) {
-            // крит готов
+        
+        if (canCritNow) {
             sendLook(client, player, sYaw, sPitch);
             client.interactionManager.attackEntity(player, target);
             player.swingHand(Hand.MAIN_HAND);
             attackTimer.reset();
             attackCount++;
             clickGate.registerClick(attackCount);
-        } else if (!shouldCrit || !canCritNow) {
-            // обычный удар или ждём крит
-            if (player.isOnGround() && !player.isTouchingWater() && !player.isClimbing() && !player.hasVehicle()) {
-                player.jump();
-            }
         }
-    }
-
-    private static boolean checkCritCondition(ClientPlayerEntity player, String mode) {
-        float requiredFall = switch (mode) {
-            case "Legit" -> {
-                int stage = attackCount & 3;
-                yield switch (stage) {
-                    case 0 -> 0.2f;
-                    case 1 -> 0.0f;
-                    case 2 -> 0.25f;
-                    default -> 0.1f;
-                };
-            }
-            case "Random" -> kaRand(0.08f, 0.3f);
-            case "Static" -> 0.15f;
-            default -> 0.0f;
-        };
-
-        return player.fallDistance >= requiredFall;
     }
 
     private static void resyncLook(MinecraftClient client, ClientPlayerEntity player) {
@@ -246,8 +207,6 @@ public class MainClient implements ClientModInitializer {
         if (e instanceof PlayerEntity p && (p.isSpectator() || p.isCreative())) return false;
         return true;
     }
-
-    // ===== Внутренние классы из Releon =====
 
     private static class StopWatch {
         private long last = System.currentTimeMillis();
@@ -294,4 +253,4 @@ public class MainClient implements ClientModInitializer {
             lastClickTime = System.currentTimeMillis();
         }
     }
-                                                                                 }
+            }
