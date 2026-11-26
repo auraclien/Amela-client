@@ -32,13 +32,12 @@ public class MainClient implements ClientModInitializer {
     public static final ModuleManager MODULES = new ModuleManager();
 
     private static final double KA_RANGE = 3.0;
-    private static final float KA_ALIGN = 10.0f;
     private static final SecureRandom KA_RANDOM = new SecureRandom();
+    private static final float AURA_ATTACK_DELAY_MS = 400.0f;
 
+    // Silent aim состояние
     private static float sYaw, sPitch;
     private static int sTargetId = -1;
-    private static boolean sSynced = true;
-
     private static StopWatch attackTimer = new StopWatch();
     private static ClickGate clickGate = new ClickGate();
     private static int attackCount = 0;
@@ -98,13 +97,12 @@ public class MainClient implements ClientModInitializer {
     private static void tickKillAura(MinecraftClient client) {
         ClientPlayerEntity player = client.player;
         if (player == null || client.world == null || client.currentScreen != null || !MODULES.isKillAura()) {
-            resyncLook(client, player);
             return;
         }
 
+        // только оружие
         ItemStack hand = player.getMainHandStack();
         if (!(hand.isIn(ItemTags.SWORDS) || hand.isIn(ItemTags.AXES) || hand.isOf(Items.MACE))) {
-            resyncLook(client, player);
             return;
         }
 
@@ -116,21 +114,22 @@ public class MainClient implements ClientModInitializer {
             if (d < best) { best = d; target = e; }
         }
         if (target == null) {
-            resyncLook(client, player);
             return;
         }
 
-        if (sTargetId != target.getId()) {
-            sTargetId = target.getId();
-            sYaw = player.getYaw();
-            sPitch = player.getPitch();
-        }
-
+        // расчёт цели для silent aim
         double dx = target.getX() - player.getX();
         double dy = (target.getY() + target.getHeight() * 0.5) - player.getEyeY();
         double dz = target.getZ() - player.getZ();
         float aimYaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0f;
         float aimPitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
+
+        // сглаженная silent-ротация (Spooky-стиль)
+        if (sTargetId != target.getId()) {
+            sTargetId = target.getId();
+            sYaw = player.getYaw();
+            sPitch = player.getPitch();
+        }
 
         float yawDelta = MathHelper.wrapDegrees(aimYaw - sYaw);
         float pitchDelta = aimPitch - sPitch;
@@ -142,21 +141,26 @@ public class MainClient implements ClientModInitializer {
             sPitch = MathHelper.clamp(sPitch + pitchDelta * scale, -89.0f, 90.0f);
         }
 
-        sendLook(client, player, sYaw, sPitch);
-        sSynced = false;
-
+        // проверка условий атаки
         if (player.getAttackCooldownProgress(0.0f) < 1.0f) return;
-        if (Math.abs(MathHelper.wrapDegrees(aimYaw - sYaw)) > KA_ALIGN) return;
-        if (Math.abs(aimPitch - sPitch) > KA_ALIGN) return;
+        if (Math.abs(MathHelper.wrapDegrees(aimYaw - sYaw)) > 10.0f) return;
+        if (Math.abs(aimPitch - sPitch) > 10.0f) return;
         if (!hasLineOfSight(player, target)) return;
 
+        // тайминг
+        if (!attackTimer.hasElapsed(AURA_ATTACK_DELAY_MS)) return;
+
+        // проверка через ClickGate
         if (!clickGate.canAttack(attackCount, 0.82f, false)) return;
 
-        // проверяем крит через текущую fallDistance (без прыжков!)
+        // крит
         boolean canCritNow = canCrit(player);
-        
+
+        // ОТПРАВКА ПАКЕТА ПОВОРОТА СЕРВЕРУ (камера не трогается!)
+        sendSilentLook(client, player, sYaw, sPitch);
+
+        // атака
         if (canCritNow) {
-            sendLook(client, player, sYaw, sPitch);
             client.interactionManager.attackEntity(player, target);
             player.swingHand(Hand.MAIN_HAND);
             attackTimer.reset();
@@ -165,15 +169,9 @@ public class MainClient implements ClientModInitializer {
         }
     }
 
-    private static void resyncLook(MinecraftClient client, ClientPlayerEntity player) {
-        if (sSynced || player == null || client.getNetworkHandler() == null) return;
-        sendLook(client, player, player.getYaw(), player.getPitch());
-        sSynced = true;
-        sTargetId = -1;
-    }
-
-    private static void sendLook(MinecraftClient client, ClientPlayerEntity player, float yaw, float pitch) {
+    private static void sendSilentLook(MinecraftClient client, ClientPlayerEntity player, float yaw, float pitch) {
         if (client.getNetworkHandler() == null) return;
+        // отправляем пакет поворота на сервер, но не меняем локальную камеру
         client.getNetworkHandler().sendPacket(
                 new PlayerMoveC2SPacket.LookAndOnGround(yaw, pitch, player.isOnGround(), player.horizontalCollision));
     }
@@ -208,6 +206,7 @@ public class MainClient implements ClientModInitializer {
         return true;
     }
 
+    // Внутренние классы
     private static class StopWatch {
         private long last = System.currentTimeMillis();
 
@@ -253,4 +252,4 @@ public class MainClient implements ClientModInitializer {
             lastClickTime = System.currentTimeMillis();
         }
     }
-            }
+}
