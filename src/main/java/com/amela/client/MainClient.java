@@ -28,22 +28,23 @@ import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
 import org.lwjgl.glfw.GLFW;
 
+import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
 
 public class MainClient implements ClientModInitializer {
     public static final ModuleManager MODULES = new ModuleManager();
 
-    // ===== Polar профиль =====
-    private static final double ATTACK_RANGE = 3.0;   // строгий reach
+    private static final double ATTACK_RANGE = 3.0;
     private static final double KEEP_RANGE = 3.6;
-    private static final float ALIGN_DEG = 4.0f;      // точное наведение перед ударом
+    private static final float ALIGN_DEG = 6.0f;
 
     private static LivingEntity target;
     private static boolean aiming;
     private static float sYaw, sPitch;
-    private static float rotSpeed;                    // текущая скорость доворота (разгон/торможение)
     private static long lastAttackMs, lastClickMs;
     private static int attackCount;
+    private static float critFall;           // порог крита на текущий прыжок (не рероллим каждый тик)
+    private static final Random SWAY = new Random();
 
     private static KeyBinding menuKey;
     private static boolean lastFullbright = false;
@@ -52,11 +53,7 @@ public class MainClient implements ClientModInitializer {
     public void onInitializeClient() {
         KeyBinding.Category category = KeyBinding.Category.create(Identifier.of("amela-client", "general"));
         menuKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                "key.amela-client.open_menu",
-                InputUtil.Type.KEYSYM,
-                GLFW.GLFW_KEY_RIGHT_SHIFT,
-                category
-        ));
+                "key.amela-client.open_menu", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_RIGHT_SHIFT, category));
 
         ClientTickEvents.START_CLIENT_TICK.register(MainClient::updateAim);
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
@@ -67,14 +64,14 @@ public class MainClient implements ClientModInitializer {
         });
     }
 
+    // ===== SpookyTime rotation (порт SpookyTimeNewAngle) =====
     private static void updateAim(MinecraftClient client) {
         ClientPlayerEntity player = client.player;
         if (player == null || client.world == null) { resetAim(); return; }
 
         LivingEntity t = null;
-        if (MODULES.isKillAura() && client.currentScreen == null && isWeapon(player.getMainHandStack())) {
+        if (MODULES.isKillAura() && client.currentScreen == null && isWeapon(player.getMainHandStack()))
             t = findTarget(player);
-        }
         target = t;
 
         if (t == null) {
@@ -84,16 +81,16 @@ public class MainClient implements ClientModInitializer {
                 if (Math.abs(dy) < 0.5f && Math.abs(dp) < 0.5f) resetAim();
                 else {
                     float len = (float) Math.hypot(dy, dp);
-                    float scale = Math.min(len, rand(15.6f, 48.0f)) / len;
-                    sYaw += dy * scale;
-                    sPitch = MathHelper.clamp(sPitch + dp * scale, -89.0f, 90.0f);
+                    float sc = Math.min(len, rand(15.6f, 48.0f)) / len;
+                    sYaw += dy * sc;
+                    sPitch = MathHelper.clamp(sPitch + dp * sc, -89.0f, 90.0f);
                     SilentRotation.set(sYaw, sPitch);
                 }
             }
             return;
         }
 
-        if (!aiming) { sYaw = player.getYaw(); sPitch = player.getPitch(); rotSpeed = 0; aiming = true; }
+        if (!aiming) { sYaw = player.getYaw(); sPitch = player.getPitch(); aiming = true; }
 
         Vec3d eye = player.getEyePos();
         Box box = t.getBoundingBox();
@@ -105,36 +102,33 @@ public class MainClient implements ClientModInitializer {
         float yawDelta = MathHelper.wrapDegrees(wantYaw - sYaw);
         float pitchDelta = wantPitch - sPitch;
         float len = (float) Math.hypot(yawDelta, pitchDelta);
+
+        // SpookyTime: шаг = min(len, rand(15.6, 24*rand(1,2))) — быстрый пропорциональный доворот
+        float dY = 0, dP = 0;
         if (len > 1.0E-4f) {
-            // «живая» скорость: разгон на дистанции, торможение у цели, без константы
-            float desired = Math.min(rand(26.0f, 40.0f), len * 0.35f + 4.0f);
-            rotSpeed += (desired - rotSpeed) * 0.4f;
-            rotSpeed *= rand(0.85f, 1.15f);
-            float step = Math.min(len, rotSpeed);
-            if (len > 20.0f && ThreadLocalRandom.current().nextInt(14) == 0) step = 0; // микро-пауза
-
-            float scale = step / len;
-            float dY = yawDelta * scale, dP = pitchDelta * scale;
-
-            // GCD под сенсу — углы кратны шагу мыши (Polar это проверяет)
-            double sens = client.options.getMouseSensitivity().getValue();
-            double f = sens * 0.6 + 0.2;
-            double gcd = f * f * f * 8.0 * 0.15;
-            dY = (float) (Math.round(dY / gcd) * gcd);
-            dP = (float) (Math.round(dP / gcd) * gcd);
-
-            // джиттер в целых GCD у цели
-            if (len < 6.0f) {
-                dY += gcd * ThreadLocalRandom.current().nextInt(-1, 2);
-                dP += gcd * ThreadLocalRandom.current().nextInt(-1, 2);
-            }
-
-            sYaw += dY;
-            sPitch = MathHelper.clamp(sPitch + dP, -89.0f, 90.0f);
+            float maxStep = rand(15.6f, 24.0f) * rand(1.0f, 2.0f);
+            float sc = Math.min(len, maxStep) / len;
+            dY = yawDelta * sc;
+            dP = pitchDelta * sc;
         }
+
+        // body sway из SpookyTime (sin-волна * gaussian), квантуем в GCD чтобы не палиться
+        double sens = client.options.getMouseSensitivity().getValue();
+        double f = sens * 0.6 + 0.2;
+        double gcd = f * f * f * 8.0 * 0.15;
+        float time = (System.currentTimeMillis() % 12000L) / 1200.0f;
+        float sway = (float) (Math.sin(time * 3.0f * 6.2831855f) * SWAY.nextGaussian());
+        dY += sway;
+
+        dY = (float) (Math.round(dY / gcd) * gcd);
+        dP = (float) (Math.round(dP / gcd) * gcd);
+
+        sYaw += dY;
+        sPitch = MathHelper.clamp(sPitch + dP, -89.0f, 90.0f);
         SilentRotation.set(sYaw, sPitch);
     }
 
+    // ===== удар + криты =====
     private static void tickAttack(MinecraftClient client) {
         ClientPlayerEntity player = client.player;
         if (player == null || client.world == null || target == null || !aiming) return;
@@ -143,49 +137,46 @@ public class MainClient implements ClientModInitializer {
 
         Vec3d eye = player.getEyePos();
         Box box = target.getBoundingBox();
-
         double cx = MathHelper.clamp(eye.x, box.minX, box.maxX);
         double cy = MathHelper.clamp(eye.y, box.minY, box.maxY);
         double cz = MathHelper.clamp(eye.z, box.minZ, box.maxZ);
         if (eye.squaredDistanceTo(cx, cy, cz) > ATTACK_RANGE * ATTACK_RANGE) return;
 
-        // наведение должно быть точным
         Vec3d look = lookVec(sYaw, sPitch);
         Vec3d aim = box.raycast(eye, box.getCenter()).orElse(box.getCenter());
         float needYaw = (float) Math.toDegrees(Math.atan2(aim.z - eye.z, aim.x - eye.x)) - 90.0f;
-        if (Math.abs(MathHelper.wrapDegrees(needYaw - sYaw)) > ALIGN_DEG) return;
-        // луч серверной ротации обязан попасть в реальный хитбокс (без expand)
-        if (!box.contains(eye) && box.raycast(eye, eye.add(look.multiply(ATTACK_RANGE))).isEmpty()) return;
+        boolean aligned = Math.abs(MathHelper.wrapDegrees(needYaw - sYaw)) <= ALIGN_DEG
+                && (!box.contains(eye) && box.raycast(eye, eye.add(look.multiply(ATTACK_RANGE))).isPresent());
 
         HitResult hit = player.getEntityWorld().raycast(new RaycastContext(
                 eye, aim, RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.NONE, player));
-        if (hit.getType() != HitResult.Type.MISS) return;
+        boolean los = hit.getType() == HitResult.Type.MISS;
 
         long now = System.currentTimeMillis();
         double speed = player.getAttributeValue(EntityAttributes.ATTACK_SPEED);
         if (!Double.isFinite(speed) || speed < 0.001) speed = 4.0;
-
-        long delay = 400 + ThreadLocalRandom.current().nextInt(0, 120); // 400–520 мс
-        boolean ready = now - lastAttackMs >= delay
+        boolean ready = now - lastAttackMs >= 400 + ThreadLocalRandom.current().nextInt(0, 90)
                 && now - lastClickMs >= (10 + (attackCount % 2)) * 50L
                 && now - lastClickMs >= (long) (1000.0 / speed)
                 && player.getAttackCooldownProgress(0.0f) >= 1.0f;
 
-        float requiredFall = rand(0.05f, 0.3f); // рандомный крит, без цикла-паттерна
         boolean crit = !player.isOnGround()
                 && player.getVelocity().y < -0.001
-                && player.fallDistance > requiredFall
+                && player.fallDistance > critFall
                 && !player.isClimbing() && !player.isTouchingWater()
                 && !player.hasStatusEffect(StatusEffects.BLINDNESS) && !player.hasVehicle();
 
-        if (ready && crit) {
+        if (ready && crit && aligned && los) {
             if (player.isSprinting()) player.setSprinting(false);
             client.interactionManager.attackEntity(player, target);
             player.swingHand(Hand.MAIN_HAND);
             lastAttackMs = now; lastClickMs = now; attackCount++;
-        } else if (!ready && player.getAttackCooldownProgress(0.0f) > 0.7f
-                && player.isOnGround() && !player.isTouchingWater()
-                && !player.isClimbing() && !player.hasVehicle()) {
+        } else if (player.isOnGround() && !player.isTouchingWater()
+                && !player.isClimbing() && !player.hasVehicle()
+                && player.getAttackCooldownProgress(0.0f) > 0.55f
+                && Math.abs(MathHelper.wrapDegrees(needYaw - sYaw)) < 25.0f) {
+            // прыжок раньше (0.55) → падение совпадает с полным кулдауном; порог фиксируем на цикл
+            critFall = rand(0.05f, 0.18f);
             player.jump();
         }
     }
@@ -220,8 +211,8 @@ public class MainClient implements ClientModInitializer {
         return new Vec3d(i * j, -k, h * j);
     }
 
-    private static void resetAim() { aiming = false; target = null; rotSpeed = 0; SilentRotation.disable(); }
-    private static float rand(float min, float max) { return MathHelper.lerp(ThreadLocalRandom.current().nextFloat(), min, max); }
+    private static void resetAim() { aiming = false; target = null; SilentRotation.disable(); }
+    private static float rand(float a, float b) { return MathHelper.lerp(ThreadLocalRandom.current().nextFloat(), a, b); }
 
     private static void tickAutoSprint(MinecraftClient client) {
         if (!MODULES.isAutoSprint()) return;
