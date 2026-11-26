@@ -21,7 +21,6 @@ import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
-import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
@@ -43,7 +42,7 @@ public class MainClient implements ClientModInitializer {
     private static final double ATTACK_RANGE = 3.0;
     private static final double RAY_RANGE = ATTACK_RANGE - 0.25;
     private static final double KEEP_RANGE = 3.6;
-    private static final double CRIT_HEIGHT = 0.0625;
+    private static final float JUMP_LEAD_TICKS = 5.0f;
 
     private static LivingEntity target;
     private static boolean aiming;
@@ -73,6 +72,12 @@ public class MainClient implements ClientModInitializer {
         });
     }
 
+    // точная формула SensitivityFix.hu()
+    private static double gcd(MinecraftClient client) {
+        double s = client.options.getMouseSensitivity().getValue();
+        return Math.pow(s * 0.6 + 0.2, 3.0) * 1.2;
+    }
+
     private static void preTick(MinecraftClient client) {
         ClientPlayerEntity player = client.player;
         if (player == null || client.world == null) { resetAim(); return; }
@@ -87,17 +92,19 @@ public class MainClient implements ClientModInitializer {
             histId = -1;
             history.clear();
             if (aiming) {
-                // AimReset: yaw 15..60 (dynamic), pitch 25, лёгкий джиттер
                 float dy = MathHelper.wrapDegrees(player.getYaw() - sYaw);
                 float dp = player.getPitch() - sPitch;
                 if (Math.abs(dy) < 0.5f && Math.abs(dp) < 0.5f) resetAim();
                 else {
-                    float yawSpeed = MathHelper.clamp(Math.abs(dy) * 0.6f + 15.0f, 15.0f, 60.0f);
-                    float pitchSpeed = 25.0f;
-                    sYaw += MathHelper.clamp(dy, -yawSpeed, yawSpeed) + rand(-1.0f, 1.0f);
-                    sPitch = MathHelper.clamp(
-                            sPitch + MathHelper.clamp(dp, -pitchSpeed, pitchSpeed) + rand(-0.8f, 0.8f),
-                            -89.0f, 90.0f);
+                    // DynamicSpeedHelper: чем меньше остаток, тем быстрее доводка
+                    float diff = (float) Math.hypot(dy, dp);
+                    float factor = 1.0f - Math.min(1.0f, diff / 180.0f);
+                    float yawSpeed = 15.0f + factor * 45.0f;
+                    float g = (float) gcd(client);
+                    float stepY = MathHelper.clamp(dy, -yawSpeed, yawSpeed);
+                    float stepP = MathHelper.clamp(dp, -25.0f, 25.0f);
+                    sYaw += (float) (Math.round(stepY / g) * g);
+                    sPitch = MathHelper.clamp(sPitch + (float) (Math.round(stepP / g) * g), -89.0f, 90.0f);
                     SilentRotation.set(sYaw, sPitch);
                 }
             }
@@ -128,21 +135,22 @@ public class MainClient implements ClientModInitializer {
             float step = Math.min(len, rotSpeed);
             if (len > 20.0f && ThreadLocalRandom.current().nextInt(14) == 0) step = 0;
             float scale = step / len;
-            float dY = yawDelta * scale, dP = pitchDelta * scale;
-
-            double sens = client.options.getMouseSensitivity().getValue();
-            double f = sens * 0.6 + 0.2;
-            double gcd = f * f * f * 8.0 * 0.15;
-            dY = (float) (Math.round(dY / gcd) * gcd);
-            dP = (float) (Math.round(dP / gcd) * gcd);
-            if (len < 6.0f) {
-                dY += gcd * ThreadLocalRandom.current().nextInt(-1, 2);
-                dP += gcd * ThreadLocalRandom.current().nextInt(-1, 2);
-            }
+            float g = (float) gcd(client);
+            float dY = (float) (Math.round(yawDelta * scale / g) * g);
+            float dP = (float) (Math.round(pitchDelta * scale / g) * g);
             sYaw += dY;
             sPitch = MathHelper.clamp(sPitch + dP, -89.0f, 90.0f);
         }
         SilentRotation.set(sYaw, sPitch);
+
+        // реальный прыжок: кулдаун истечёт до апекса, удар придётся на падение
+        if (player.isOnGround() && !player.isTouchingWater() && !player.isClimbing()
+                && !player.hasVehicle()
+                && player.squaredDistanceTo(t) <= ATTACK_RANGE * ATTACK_RANGE) {
+            float ticksLeft = (1.0f - player.getAttackCooldownProgress(0.0f))
+                    * 20.0f / (float) attackSpeed(player);
+            if (ticksLeft <= JUMP_LEAD_TICKS) player.jump();
+        }
     }
 
     private static void tickAttack(MinecraftClient client) {
@@ -182,12 +190,13 @@ public class MainClient implements ClientModInitializer {
                 && player.getAttackCooldownProgress(0.0f) >= 1.0f;
         if (!ready) return;
 
-        if (player.isTouchingWater() || player.isClimbing() || player.hasVehicle()
-                || player.hasStatusEffect(StatusEffects.BLINDNESS)) return;
-
-        boolean realCrit = player.fallDistance > 0.0f && !player.isOnGround()
-                && player.getVelocity().y < 0.0;
-        if (!realCrit && !player.isOnGround()) return;
+        // только настоящий крит: падение, не земля
+        boolean crit = player.fallDistance > 0.0f
+                && !player.isOnGround()
+                && player.getVelocity().y < 0.0
+                && !player.isClimbing() && !player.isTouchingWater()
+                && !player.hasStatusEffect(StatusEffects.BLINDNESS) && !player.hasVehicle();
+        if (!crit) return;
 
         if (player.isSprinting()) {
             player.setSprinting(false);
@@ -197,22 +206,9 @@ public class MainClient implements ClientModInitializer {
             }
         }
 
-        if (!realCrit) {
-            sendPos(client, player, player.getY() + CRIT_HEIGHT);
-            sendPos(client, player, player.getY() + Math.max(0.001, CRIT_HEIGHT * 0.2));
-        }
-
         client.interactionManager.attackEntity(player, target);
         player.swingHand(Hand.MAIN_HAND);
         lastAttackMs = now; lastClickMs = now; attackCount++;
-    }
-
-    private static void sendPos(MinecraftClient client, ClientPlayerEntity p, double y) {
-        if (client.getNetworkHandler() == null) return;
-        client.getNetworkHandler().sendPacket(new PlayerMoveC2SPacket.Full(
-                p.getX(), y, p.getZ(),
-                SilentRotation.getYaw(), SilentRotation.getPitch(),
-                false, p.horizontalCollision));
     }
 
     private static Box backtrackBox(Box current, ClientPlayerEntity player) {
@@ -281,8 +277,8 @@ public class MainClient implements ClientModInitializer {
         if (!MODULES.isAutoSprint()) return;
         ClientPlayerEntity p = client.player;
         if (p == null || client.currentScreen != null) return;
-        if (client.options.forwardKey.isPressed() && !p.horizontalCollision && !p.isSneaking()
-                && p.getHungerManager().getFoodLevel() > 6.0f) p.setSprinting(true);
+        if (p.isOnGround() && client.options.forwardKey.isPressed() && !p.horizontalCollision
+                && !p.isSneaking() && p.getHungerManager().getFoodLevel() > 6.0f) p.setSprinting(true);
     }
 
     private static void tickFullbright(MinecraftClient client) {
@@ -296,4 +292,4 @@ public class MainClient implements ClientModInitializer {
         } else if (lastFullbright) p.removeStatusEffect(StatusEffects.NIGHT_VISION);
         lastFullbright = on;
     }
-                            }
+}
