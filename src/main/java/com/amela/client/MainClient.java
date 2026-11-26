@@ -11,6 +11,7 @@ import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.attribute.EntityAttributes;
 import net.minecraft.entity.decoration.ArmorStandEntity;
@@ -103,7 +104,7 @@ public class MainClient implements ClientModInitializer {
 
         if (histId != t.getId()) { histId = t.getId(); history.clear(); }
         long now = System.currentTimeMillis();
-        history.addLast(new Snap(now, t.getPos()));
+        history.addLast(new Snap(now, pos(t)));
         while (!history.isEmpty() && now - history.peekFirst().time() > 400) history.removeFirst();
 
         if (!aiming) { sYaw = player.getYaw(); sPitch = player.getPitch(); rotSpeed = 0; aiming = true; }
@@ -229,9 +230,13 @@ public class MainClient implements ClientModInitializer {
             if (s.time() <= want) best = s; else break;
         }
         if (best == null) return null;
-        Vec3d delta = best.pos().subtract(target.getPos());
+        Vec3d delta = best.pos().subtract(pos(target));
         if (delta.lengthSquared() < 1.0E-6) return null;
         return current.offset(delta);
+    }
+
+    private static Vec3d pos(Entity e) {
+        return new Vec3d(e.getX(), e.getY(), e.getZ());
     }
 
     private static double attackSpeed(ClientPlayerEntity p) {
