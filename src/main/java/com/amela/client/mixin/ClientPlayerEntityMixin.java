@@ -21,8 +21,8 @@ public abstract class ClientPlayerEntityMixin {
         ClientPlayerEntity self = (ClientPlayerEntity) (Object) this;
         amela$yaw = self.getYaw(); amela$pitch = self.getPitch();
         amela$head = self.headYaw; amela$body = self.bodyYaw;
-        amela$pYaw = self.prevYaw; amela$pPitch = self.prevPitch;
-        amela$pHead = self.prevHeadYaw; amela$pBody = self.prevBodyYaw;
+        amela$pYaw = self.lastYaw; amela$pPitch = self.lastPitch;
+        amela$pHead = self.lastHeadYaw; amela$pBody = self.lastBodyYaw;
 
         float y = SilentRotation.getYaw(), p = SilentRotation.getPitch();
         self.setYaw(y); self.setPitch(p);
@@ -30,15 +30,15 @@ public abstract class ClientPlayerEntityMixin {
         amela$swapped = true;
     }
 
-    // возвращаем камеру и prev-поля, чтобы рендер не дёргался
+    // возвращаем камеру и last-поля, чтобы рендер не дёргался
     @Inject(method = "tick", at = @At("RETURN"))
     private void amela$post(CallbackInfo ci) {
         if (!amela$swapped) return;
         ClientPlayerEntity self = (ClientPlayerEntity) (Object) this;
         self.setYaw(amela$yaw); self.setPitch(amela$pitch);
         self.headYaw = amela$head; self.bodyYaw = amela$body;
-        self.prevYaw = amela$pYaw; self.prevPitch = amela$pPitch;
-        self.prevHeadYaw = amela$pHead; self.prevBodyYaw = amela$pBody;
+        self.lastYaw = amela$pYaw; self.lastPitch = amela$pPitch;
+        self.lastHeadYaw = amela$pHead; self.lastBodyYaw = amela$pBody;
         amela$swapped = false;
     }
 }
