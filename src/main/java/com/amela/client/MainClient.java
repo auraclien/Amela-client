@@ -21,6 +21,7 @@ import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
+import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
@@ -42,14 +43,13 @@ public class MainClient implements ClientModInitializer {
     private static final double ATTACK_RANGE = 3.0;
     private static final double RAY_RANGE = ATTACK_RANGE - 0.25;
     private static final double KEEP_RANGE = 3.6;
-    private static final float JUMP_LEAD_TICKS = 9.0f;
+    private static final double CRIT_HEIGHT = 0.0625; // Criticals.vanillaHeight
 
     private static LivingEntity target;
     private static boolean aiming;
     private static float sYaw, sPitch, rotSpeed;
     private static long lastAttackMs, lastClickMs;
     private static int attackCount;
-    private static boolean jumpedByUs;
 
     private record Snap(long time, Vec3d pos) {}
     private static final ArrayDeque<Snap> history = new ArrayDeque<>();
@@ -67,10 +67,10 @@ public class MainClient implements ClientModInitializer {
         ClientTickEvents.START_CLIENT_TICK.register(MainClient::preTick);
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             while (menuKey.wasPressed()) client.setScreen(new AmelaScreen());
-            if (jumpedByUs) { client.options.jumpKey.setPressed(false); jumpedByUs = false; }
             tickAutoSprint(client);
             tickFullbright(client);
             tickAttack(client);
+            applyVisualAim(client);
         });
     }
 
@@ -141,18 +141,6 @@ public class MainClient implements ClientModInitializer {
             sPitch = MathHelper.clamp(sPitch + dP, -89.0f, 90.0f);
         }
         SilentRotation.set(sYaw, sPitch);
-
-        // прыжок: кулдаун должен истечь в середине падения
-        if (player.isOnGround() && !player.isTouchingWater() && !player.isClimbing()
-                && !player.hasVehicle() && !client.options.jumpKey.isPressed()
-                && player.squaredDistanceTo(t) <= ATTACK_RANGE * ATTACK_RANGE) {
-            float ticksLeft = (1.0f - player.getAttackCooldownProgress(0.0f))
-                    * 20.0f / (float) attackSpeed(player);
-            if (ticksLeft <= JUMP_LEAD_TICKS) {
-                client.options.jumpKey.setPressed(true);
-                jumpedByUs = true;
-            }
-        }
     }
 
     private static void tickAttack(MinecraftClient client) {
@@ -192,13 +180,14 @@ public class MainClient implements ClientModInitializer {
                 && player.getAttackCooldownProgress(0.0f) >= 1.0f;
         if (!ready) return;
 
-        // ванильные условия крита, без рандома
-        boolean crit = player.fallDistance > 0.0f
-                && !player.isOnGround()
-                && player.getVelocity().y < 0.0
-                && !player.isClimbing() && !player.isTouchingWater()
-                && !player.hasStatusEffect(StatusEffects.BLINDNESS) && !player.hasVehicle();
-        if (!crit) return;
+        boolean blocked = player.isTouchingWater() || player.isClimbing() || player.hasVehicle()
+                || player.hasStatusEffect(StatusEffects.BLINDNESS);
+        if (blocked) return;
+
+        boolean realCrit = player.fallDistance > 0.0f && !player.isOnGround()
+                && player.getVelocity().y < 0.0;
+        boolean packetCrit = player.isOnGround();
+        if (!realCrit && !packetCrit) return;
 
         // сброс спринта + мгновенный пакет ДО атаки
         if (player.isSprinting()) {
@@ -209,12 +198,31 @@ public class MainClient implements ClientModInitializer {
             }
         }
 
+        // пакетный крит (Criticals "Vanilla"): подъём + оседание, оба onGround=false
+        if (!realCrit) {
+            sendPos(client, player, player.getY() + CRIT_HEIGHT);
+            sendPos(client, player, player.getY() + Math.max(0.001, CRIT_HEIGHT * 0.2));
+        }
+
         client.interactionManager.attackEntity(player, target);
         player.swingHand(Hand.MAIN_HAND);
         lastAttackMs = now; lastClickMs = now; attackCount++;
     }
 
-    // бэктрек: хитбокс цели ~пинг назад (доп. проверка, основную не заменяет)
+    private static void sendPos(MinecraftClient client, ClientPlayerEntity p, double y) {
+        if (client.getNetworkHandler() == null) return;
+        client.getNetworkHandler().sendPacket(new PlayerMoveC2SPacket.Full(
+                p.getX(), y, p.getZ(), p.getYaw(), p.getPitch(), false, p.horizontalCollision));
+    }
+
+    // только визуал: голова/тело смотрят на цель, физика не затрагивается
+    private static void applyVisualAim(MinecraftClient client) {
+        ClientPlayerEntity p = client.player;
+        if (p == null || !aiming) return;
+        p.headYaw = sYaw;
+        p.bodyYaw = sYaw;
+    }
+
     private static Box backtrackBox(Box current, ClientPlayerEntity player) {
         if (history.size() < 2 || target == null) return null;
         int latency = 0;
@@ -281,9 +289,8 @@ public class MainClient implements ClientModInitializer {
         if (!MODULES.isAutoSprint()) return;
         ClientPlayerEntity p = client.player;
         if (p == null || client.currentScreen != null) return;
-        // только на земле: в воздухе не перебиваем сброс спринта под крит
-        if (p.isOnGround() && client.options.forwardKey.isPressed() && !p.horizontalCollision
-                && !p.isSneaking() && p.getHungerManager().getFoodLevel() > 6.0f) p.setSprinting(true);
+        if (client.options.forwardKey.isPressed() && !p.horizontalCollision && !p.isSneaking()
+                && p.getHungerManager().getFoodLevel() > 6.0f) p.setSprinting(true);
     }
 
     private static void tickFullbright(MinecraftClient client) {
