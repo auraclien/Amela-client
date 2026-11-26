@@ -28,16 +28,8 @@ public abstract class ClientPlayerEntityMixin {
     private void amela$post(CallbackInfo ci) {
         if (!amela$swapped) return;
         ClientPlayerEntity self = (ClientPlayerEntity) (Object) this;
-        float sy = SilentRotation.getYaw();
-
-        // камера свободна
         self.setYaw(amela$yaw); self.setPitch(amela$pitch);
         self.lastYaw = amela$pYaw; self.lastPitch = amela$pPitch;
-
-        // тело/голова и их last-поля — одним значением, без интерполяционного рывка
-        self.headYaw = sy; self.lastHeadYaw = sy;
-        self.bodyYaw = sy; self.lastBodyYaw = sy;
-
         amela$swapped = false;
     }
 }
