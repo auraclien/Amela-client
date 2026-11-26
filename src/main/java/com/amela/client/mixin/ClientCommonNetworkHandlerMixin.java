@@ -18,7 +18,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class ClientCommonNetworkHandlerMixin {
     @Shadow @Final protected ClientConnection connection;
 
-    // подмена ротации в ванильных пакетах движения (как AngleConnection в Releon)
     @Inject(method = "sendPacket", at = @At("HEAD"), cancellable = true)
     private void amela$silentRotation(Packet<?> packet, CallbackInfo ci) {
         if (!SilentRotation.isActive() || !(packet instanceof PlayerMoveC2SPacket move)) return;
@@ -34,10 +33,10 @@ public abstract class ClientCommonNetworkHandlerMixin {
                     move.getX(player.getX()), move.getY(player.getY()), move.getZ(player.getZ()),
                     yaw, pitch, move.isOnGround(), move.horizontalCollision());
         } else {
-            // форсируем look даже когда камера стоит — иначе сервер не получит прицел
             out = new PlayerMoveC2SPacket.LookAndOnGround(yaw, pitch, move.isOnGround(), move.horizontalCollision());
         }
         ci.cancel();
-        this.connection.send(out); // не через sendPacket — без рекурсии, частота пакетов 1:1
+        SilentRotation.markSent(yaw, pitch);
+        this.connection.send(out);
     }
 }
