@@ -3,7 +3,8 @@
   "package": "com.amela.client.mixin",
   "compatibilityLevel": "JAVA_21",
   "client": [
-    "ClientCommonNetworkHandlerMixin"
+    "ClientCommonNetworkHandlerMixin",
+    "ClientPlayerEntityMixin"
   ],
   "injectors": {
     "defaultRequire": 1
