@@ -38,14 +38,12 @@ public class MainClient implements ClientModInitializer {
     private static final double ATTACK_RANGE = 3.0;
     private static final double RAY_RANGE = ATTACK_RANGE - 0.25;
     private static final double KEEP_RANGE = 3.6;
-    private static final float JUMP_LEAD_TICKS = 7.0f;
 
     private static LivingEntity target;
     private static boolean aiming;
     private static float sYaw, sPitch, rotSpeed;
     private static long lastAttackMs, lastClickMs;
     private static int attackCount;
-    private static boolean jumpedByUs, sprintReleased;
 
     private static KeyBinding menuKey;
     private static boolean lastFullbright = false;
@@ -59,8 +57,6 @@ public class MainClient implements ClientModInitializer {
         ClientTickEvents.START_CLIENT_TICK.register(MainClient::preTick);
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             while (menuKey.wasPressed()) client.setScreen(new AmelaScreen());
-            if (jumpedByUs) { client.options.jumpKey.setPressed(false); jumpedByUs = false; }
-            if (sprintReleased) { client.options.sprintKey.setPressed(true); sprintReleased = false; }
             tickAutoSprint(client);
             tickFullbright(client);
             tickAttack(client);
@@ -129,26 +125,12 @@ public class MainClient implements ClientModInitializer {
         }
         SilentRotation.set(sYaw, sPitch);
 
+        // прыжок: ванильный player.jump(), ванилла сама обновит input
         float cd = player.getAttackCooldownProgress(0.0f);
-
-        // прыжок через клавишу: ванилла сама отправит input jump=true (никакого рассинхрона)
         if (player.isOnGround() && !player.isTouchingWater() && !player.isClimbing()
-                && !player.hasVehicle() && !client.options.jumpKey.isPressed()
-                && player.squaredDistanceTo(t) <= ATTACK_RANGE * ATTACK_RANGE) {
+                && !player.hasVehicle() && player.squaredDistanceTo(t) <= ATTACK_RANGE * ATTACK_RANGE) {
             float ticksLeft = (1.0f - cd) * 20.0f / (float) attackSpeed(player);
-            if (ticksLeft <= JUMP_LEAD_TICKS) {
-                client.options.jumpKey.setPressed(true);
-                jumpedByUs = true;
-            }
-        }
-
-        // сброс спринта под крит (MaxDamage.mx): снимаем клавишу, ванилла шлёт STOP_SPRINTING до атаки
-        if (!player.isOnGround() && player.getVelocity().y < 0.0 && cd >= 0.85f && player.isSprinting()) {
-            if (client.options.sprintKey.isPressed()) {
-                client.options.sprintKey.setPressed(false);
-                sprintReleased = true;
-            }
-            player.setSprinting(false);
+            if (ticksLeft <= 7.0f) player.jump();
         }
     }
 
@@ -166,7 +148,6 @@ public class MainClient implements ClientModInitializer {
         double cz = MathHelper.clamp(eye.z, box.minZ, box.maxZ);
         if (eye.squaredDistanceTo(cx, cy, cz) > ATTACK_RANGE * ATTACK_RANGE) return;
 
-        // луч ПРЕДЫДУЩЕЙ отправленной ротации по настоящему хитбоксу
         Vec3d dir = lookVec(SilentRotation.getSentYaw(), SilentRotation.getSentPitch());
         Vec3d end = eye.add(dir.multiply(RAY_RANGE));
         Optional<Vec3d> hit = box.contains(eye) ? Optional.of(eye) : box.raycast(eye, end);
@@ -185,7 +166,7 @@ public class MainClient implements ClientModInitializer {
                 && player.getAttackCooldownProgress(0.0f) >= 1.0f;
         if (!ready) return;
 
-        // крит: падение + спринт уже выключен (иначе сервер даст 100% вместо 150%)
+        // ванильный крит: падение + velocity вниз
         boolean crit = player.fallDistance > 0.0f
                 && !player.isOnGround()
                 && player.getVelocity().y < 0.0
@@ -241,9 +222,8 @@ public class MainClient implements ClientModInitializer {
         if (!MODULES.isAutoSprint()) return;
         ClientPlayerEntity p = client.player;
         if (p == null || client.currentScreen != null) return;
-        // только на земле, чтобы не перебивать сброс спринта под крит
-        if (p.isOnGround() && client.options.forwardKey.isPressed() && !p.horizontalCollision
-                && !p.isSneaking() && p.getHungerManager().getFoodLevel() > 6.0f) p.setSprinting(true);
+        if (client.options.forwardKey.isPressed() && !p.horizontalCollision && !p.isSneaking()
+                && p.getHungerManager().getFoodLevel() > 6.0f) p.setSprinting(true);
     }
 
     private static void tickFullbright(MinecraftClient client) {
@@ -257,4 +237,4 @@ public class MainClient implements ClientModInitializer {
         } else if (lastFullbright) p.removeStatusEffect(StatusEffects.NIGHT_VISION);
         lastFullbright = on;
     }
-                }
+    }
