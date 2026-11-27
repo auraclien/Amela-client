@@ -19,7 +19,7 @@ public abstract class ClientCommonNetworkHandlerMixin {
     @Shadow @Final protected ClientConnection connection;
 
     @Inject(method = "sendPacket", at = @At("HEAD"), cancellable = true)
-    private void amela$silentRotation(Packet<?> packet, CallbackInfo ci) {
+    private void amela$rewrite(Packet<?> packet, CallbackInfo ci) {
         if (!SilentRotation.isActive() || !(packet instanceof PlayerMoveC2SPacket move)) return;
         ClientPlayerEntity player = MinecraftClient.getInstance().player;
         if (player == null) return;
